@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { supabase, callAI } from "../supabase.js";
-import { C, st, Btn, Tag, Convergence, ErrorNote } from "../ui.jsx";
+import { C, st, Btn, Tag, Convergence, ErrorNote, InviteBox } from "../ui.jsx";
 
 export default function SharedChat({ membership, state, refreshState }) {
   if (!state) return <p style={st.hint}>Lade …</p>;
@@ -20,6 +20,7 @@ function Gate({ state, refreshState, membership }) {
       const res = await callAI({ action: "gate" });
       setVerdict(res.readiness);
       await refreshState();
+      if (res.gate_open) { try { await callAI({ action: "notify", kind: "gate" }); } catch { /* optional */ } }
     } catch (e) {
       setError("Prüfung fehlgeschlagen. Bitte später erneut versuchen.");
     }
@@ -54,9 +55,7 @@ function Gate({ state, refreshState, membership }) {
         {!state.partner_joined && (
           <div style={{ marginTop: 12 }}>
             <p style={st.hint}>Deine Partnerin oder dein Partner ist noch nicht beigetreten. Zum Beitreten braucht sie oder er diesen Einladungscode (Registrieren → „Mit Einladungscode beitreten"):</p>
-            <div style={{ textAlign: "center", fontFamily: "'Fraunces', Georgia, serif", fontSize: 26, letterSpacing: "0.15em", padding: "10px 0", border: `1px dashed ${C.line}`, borderRadius: 10, userSelect: "all" }}>
-              {membership?.couples?.invite_code || "—"}
-            </div>
+            <InviteBox code={membership?.couples?.invite_code} />
           </div>
         )}
         {verdict && <p style={{ ...st.body, marginTop: 12, fontStyle: "italic" }}>{verdict}</p>}
@@ -100,8 +99,9 @@ function Chat({ membership }) {
     const { error } = await supabase
       .from("chat_messages")
       .insert({ couple_id: membership.couple_id, content: text });
-    if (error) setError("Senden fehlgeschlagen.");
+    if (error) { setError("Senden fehlgeschlagen."); return; }
     await load();
+    try { await callAI({ action: "notify", kind: "chat" }); } catch { /* Mail ist optional */ }
   }
 
   async function moderate() {
@@ -117,27 +117,60 @@ function Chat({ membership }) {
 
   const mine = (m) => m.sender_id === membership.user_id;
 
+  const uhrzeit = (iso) =>
+    new Date(iso).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+
+  const tagesLabel = (iso) => {
+    const d = new Date(iso);
+    const heute = new Date();
+    const gestern = new Date(Date.now() - 864e5);
+    const gleich = (a, b) => a.toDateString() === b.toDateString();
+    if (gleich(d, heute)) return "Heute";
+    if (gleich(d, gestern)) return "Gestern";
+    return d.toLocaleDateString("de-DE", { weekday: "long", day: "numeric", month: "long" });
+  };
+
   return (
     <div style={{ display: "grid", gap: 14 }}>
       <ErrorNote>{error}</ErrorNote>
       <section style={{ ...st.card, minHeight: 300, maxHeight: "55vh", overflowY: "auto" }}>
-        {msgs.map((m) => (
-          <div key={m.id} style={{ marginBottom: 14 }}>
-            {m.sender_id === null ? (
-              <div style={{ background: C.paper, borderLeft: `3px solid ${C.ink}`, borderRadius: 8, padding: "12px 14px" }}>
-                <span style={{ fontSize: 12, fontWeight: 700, color: C.ink, letterSpacing: "0.06em" }}>ZWISCHENRAUM</span>
-                <p style={{ ...st.body, marginTop: 4, whiteSpace: "pre-wrap" }}>{m.content}</p>
+        {msgs.map((m, idx) => {
+          const vorher = idx > 0 ? msgs[idx - 1] : null;
+          const neuerTag = !vorher ||
+            new Date(vorher.created_at).toDateString() !== new Date(m.created_at).toDateString();
+          return (
+            <div key={m.id}>
+              {neuerTag && (
+                <div style={{ textAlign: "center", margin: "18px 0 12px" }}>
+                  <span style={{ fontSize: 12, color: C.inkSoft, background: C.paper, padding: "3px 12px", borderRadius: 999 }}>
+                    {tagesLabel(m.created_at)}
+                  </span>
+                </div>
+              )}
+              <div style={{ marginBottom: 14 }}>
+                {m.sender_id === null ? (
+                  <div style={{ background: C.paper, borderLeft: `3px solid ${C.ink}`, borderRadius: 8, padding: "12px 14px" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: C.ink, letterSpacing: "0.06em" }}>ZWISCHENRAUM</span>
+                      <span style={{ fontSize: 11.5, color: C.inkSoft }}>{uhrzeit(m.created_at)}</span>
+                    </div>
+                    <p style={{ ...st.body, marginTop: 4, whiteSpace: "pre-wrap" }}>{m.content}</p>
+                  </div>
+                ) : (
+                  <div style={{ textAlign: mine(m) ? "right" : "left" }}>
+                    <div style={{ display: "flex", gap: 8, alignItems: "baseline", justifyContent: mine(m) ? "flex-end" : "flex-start" }}>
+                      <Tag role={mine(m) ? membership.role : membership.role === "A" ? "B" : "A"}>
+                        {mine(m) ? "Du" : "Partner"}
+                      </Tag>
+                      <span style={{ fontSize: 11.5, color: C.inkSoft }}>{uhrzeit(m.created_at)}</span>
+                    </div>
+                    <p style={{ ...st.body, marginTop: 4, whiteSpace: "pre-wrap" }}>{m.content}</p>
+                  </div>
+                )}
               </div>
-            ) : (
-              <div style={{ textAlign: mine(m) ? "right" : "left" }}>
-                <Tag role={mine(m) ? membership.role : membership.role === "A" ? "B" : "A"}>
-                  {mine(m) ? "Du" : "Partner"}
-                </Tag>
-                <p style={{ ...st.body, marginTop: 4, whiteSpace: "pre-wrap" }}>{m.content}</p>
-              </div>
-            )}
-          </div>
-        ))}
+            </div>
+          );
+        })}
         <div ref={endRef} />
       </section>
       <div style={{ display: "flex", gap: 8 }}>

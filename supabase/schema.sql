@@ -339,3 +339,39 @@ create policy "admins: sich selbst erkennen" on admins
 -- insert into admins (user_id)
 --   select id from auth.users where email = 'ADMIN@EMAIL.DE'
 --   on conflict do nothing;
+-- ============================================================
+-- UPDATE 6: E-Mail-Benachrichtigungen, Einladungslink
+-- Idempotent, rein additiv.
+-- ============================================================
+
+-- Benachrichtigungs-Einstellung je Person
+alter table couple_members add column if not exists email_freq text not null default 'daily';
+alter table couple_members drop constraint if exists couple_members_email_freq_check;
+alter table couple_members add constraint couple_members_email_freq_check
+  check (email_freq in ('none','daily','instant'));
+
+-- Protokoll: verhindert Doppelversand und speist die Tageszusammenfassung
+create table if not exists email_events (
+  id uuid primary key default gen_random_uuid(),
+  couple_id uuid not null references couples(id) on delete cascade,
+  recipient_id uuid not null references auth.users(id) on delete cascade,
+  kind text not null,               -- 'chat' | 'gate' | 'report' | 'mirror' | 'partner_joined'
+  sent_instant boolean not null default false,
+  included_in_daily boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists email_events_pending_idx
+  on email_events (recipient_id, included_in_daily, created_at);
+
+alter table email_events enable row level security;
+
+drop policy if exists "email_events: nur eigene lesen" on email_events;
+create policy "email_events: nur eigene lesen" on email_events
+  for select using (recipient_id = auth.uid());
+
+-- Eigene Zeile darf aktualisiert werden (Einstellung ändern)
+drop policy if exists "members: eigene Zeile aendern" on couple_members;
+create policy "members: eigene Zeile aendern" on couple_members
+  for update using (user_id = auth.uid())
+  with check (user_id = auth.uid());

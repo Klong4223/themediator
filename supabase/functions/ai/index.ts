@@ -80,7 +80,9 @@ async function claude(prompt: string, maxTokens = 900, strong = false): Promise<
     .trim();
 }
 
-const VERSION = "2026-08-03";
+const VERSION = "2026-08-05";
+const APP_URL = "https://zwischenraum.work";
+const MAIL_FROM = "Zwischenraum <hallo@zwischenraum.work>";
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
@@ -597,6 +599,73 @@ Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","..."]}`, 700);
       return json({ ok: true });
     }
 
+    // ─── Benachrichtigung ausloesen (nie mit Inhalten) ──────
+    if (body.action === "notify") {
+      if (!partner) return json({ ok: true, skipped: "kein Partner" });
+      const kind = String(body.kind ?? "");
+      if (!["chat", "gate", "report", "mirror", "partner_joined"].includes(kind)) {
+        return json({ error: "Unbekannter Benachrichtigungstyp." }, 400);
+      }
+      const { data: pm } = await admin.from("couple_members")
+        .select("email_freq").eq("couple_id", member.couple_id).eq("user_id", partner.user_id).maybeSingle();
+      const freq = pm?.email_freq ?? "daily";
+      if (freq === "none") return json({ ok: true, skipped: "abbestellt" });
+
+      // "partner_joined" nie sofort - nur in der Tageszusammenfassung
+      const instant = freq === "instant" && kind !== "partner_joined";
+
+      // Sofortmails hoechstens alle 30 Minuten je Typ
+      let send = instant;
+      if (instant) {
+        const { data: recent } = await admin.from("email_events")
+          .select("id").eq("recipient_id", partner.user_id).eq("kind", kind).eq("sent_instant", true)
+          .gte("created_at", new Date(Date.now() - 30 * 60000).toISOString()).limit(1);
+        if ((recent ?? []).length) send = false;
+      }
+
+      if (send) {
+        const { data: pu } = await admin.auth.admin.getUserById(partner.user_id);
+        const to = pu?.user?.email;
+        if (to) await sendMail(to, betreff(kind), textFor(kind));
+      }
+      await admin.from("email_events").insert({
+        couple_id: member.couple_id, recipient_id: partner.user_id, kind,
+        sent_instant: send, included_in_daily: send,
+      });
+      return json({ ok: true, sent: send });
+    }
+
+    // ─── Tageszusammenfassung (per Cron aufgerufen) ─────────
+    if (body.action === "daily_digest") {
+      if (body.secret !== Deno.env.get("CRON_SECRET")) return json({ error: "Kein Zugriff." }, 403);
+      const { data: pending } = await admin.from("email_events")
+        .select("id, recipient_id, kind").eq("included_in_daily", false)
+        .order("created_at", { ascending: true }).limit(500);
+      const byUser: Record<string, { ids: string[]; kinds: Set<string> }> = {};
+      for (const e of pending ?? []) {
+        (byUser[e.recipient_id] ??= { ids: [], kinds: new Set() });
+        byUser[e.recipient_id].ids.push(e.id);
+        byUser[e.recipient_id].kinds.add(e.kind);
+      }
+      let sent = 0;
+      for (const [uid, agg] of Object.entries(byUser)) {
+        const { data: m } = await admin.from("couple_members")
+          .select("email_freq").eq("user_id", uid).maybeSingle();
+        if ((m?.email_freq ?? "daily") !== "none") {
+          const { data: u } = await admin.auth.admin.getUserById(uid);
+          const to = u?.user?.email;
+          if (to) {
+            const zeilen = [...agg.kinds].map((k) => "- " + textFor(k)).join("\n");
+            await sendMail(to, "Es gibt Neues bei Zwischenraum",
+              `In eurem Zwischenraum hat sich etwas getan:\n\n${zeilen}`);
+            sent++;
+          }
+        }
+        await admin.from("email_events").update({ included_in_daily: true }).in("id", agg.ids);
+      }
+      return json({ ok: true, recipients: sent });
+    }
+
     // ─── Chat-Moderation ────────────────────────────────────
     if (body.action === "chat") {
       const { data: msgs } = await admin.from("chat_messages")
@@ -663,6 +732,40 @@ Antworte nur mit dem aktualisierten Profil.`, 700);
   await admin.from("ai_profiles").upsert({
     couple_id: coupleId, user_id: userId, profile: updated, updated_at: new Date().toISOString(),
   });
+}
+
+function betreff(kind: string): string {
+  switch (kind) {
+    case "chat": return "Neue Nachricht in eurem gemeinsamen Raum";
+    case "gate": return "Euer gemeinsamer Raum ist offen";
+    case "report": return "Euer Beziehungsbild ist fertig";
+    case "mirror": return "Dein Spiegel ist fertig";
+    default: return "Es gibt Neues bei Zwischenraum";
+  }
+}
+
+// WICHTIG: Mails enthalten NIE Inhalte - nur den Hinweis, dass es etwas gibt.
+function textFor(kind: string): string {
+  switch (kind) {
+    case "chat": return "Es gibt eine neue Nachricht in eurem gemeinsamen Raum.";
+    case "gate": return "Euer gemeinsamer Raum hat sich geoeffnet - ihr koennt jetzt moderiert miteinander sprechen.";
+    case "report": return "Euer Beziehungsbild wurde erstellt und wartet auf dich.";
+    case "mirror": return "Dein persoenlicher Spiegel wurde erstellt.";
+    case "partner_joined": return "Deine Partnerin oder dein Partner ist eurem Raum beigetreten.";
+    default: return "Es gibt Neues in eurem Zwischenraum.";
+  }
+}
+
+async function sendMail(to: string, subject: string, body: string) {
+  const key = Deno.env.get("RESEND_API_KEY");
+  if (!key) { console.error("RESEND_API_KEY fehlt - keine Mail versendet."); return; }
+  const text = `${body}\n\nHier geht es weiter: ${APP_URL}\n\n--\nDu bekommst diese Nachricht, weil du Zwischenraum nutzt.\nHaeufigkeit aendern oder abbestellen: ${APP_URL} (Bereich "Ueber dich" > Benachrichtigungen)\nAus Datenschutzgruenden stehen in unseren E-Mails niemals Inhalte.`;
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { "content-type": "application/json", "authorization": `Bearer ${key}` },
+    body: JSON.stringify({ from: MAIL_FROM, to, subject, text }),
+  });
+  if (!res.ok) console.error(`Resend ${res.status}: ${await res.text()}`);
 }
 
 function json(obj: unknown, status = 200) {

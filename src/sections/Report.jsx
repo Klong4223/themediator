@@ -53,6 +53,7 @@ export default function Report({ membership }) {
     setBusy(true); setError(null);
     try {
       await callAI({ action: "report" });
+      try { await callAI({ action: "notify", kind: "report" }); } catch { /* optional */ }
       await load();
     } catch (e) {
       setError("Der Bericht konnte nicht erstellt werden. Bitte erneut versuchen.");

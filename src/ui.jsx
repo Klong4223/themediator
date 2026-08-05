@@ -100,6 +100,39 @@ export function ErrorNote({ children }) {
   );
 }
 
+export function InviteBox({ code }) {
+  const [kopiert, setKopiert] = React.useState(false);
+  if (!code) return null;
+  const link = `https://zwischenraum.work/?code=${code}`;
+  const text = `Ich habe uns einen Raum bei Zwischenraum angelegt — einer App, die uns beim Verstehen hilft. Jeder schreibt für sich, niemand liest die Texte des anderen. Hier ist dein Zugang: ${link}`;
+
+  async function teilen() {
+    try {
+      if (navigator.share) { await navigator.share({ text }); return; }
+      await navigator.clipboard.writeText(text);
+      setKopiert(true); setTimeout(() => setKopiert(false), 2500);
+    } catch { /* abgebrochen */ }
+  }
+
+  return (
+    <div>
+      <div style={{
+        textAlign: "center", fontFamily: font.body, fontSize: 14, color: C.inkSoft,
+        padding: "12px 14px", border: `1px dashed ${C.line}`, borderRadius: 10,
+        background: "#FDFDFC", userSelect: "all", overflowWrap: "anywhere",
+      }}>
+        {link}
+      </div>
+      <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 10, flexWrap: "wrap" }}>
+        <Btn onClick={teilen}>{kopiert ? "✓ Kopiert" : "Einladung teilen"}</Btn>
+      </div>
+      <p style={{ fontSize: 12.5, color: C.inkSoft, textAlign: "center", marginTop: 8 }}>
+        Code zum manuellen Eingeben: <strong style={{ userSelect: "all" }}>{code}</strong>
+      </p>
+    </div>
+  );
+}
+
 export function Shell({ children }) {
   return (
     <div style={{ background: C.paper, minHeight: "100vh", padding: "24px 16px 72px", color: C.ink }}>

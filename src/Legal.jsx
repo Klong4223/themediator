@@ -71,25 +71,32 @@ export function DatenschutzText() {
         OpenAI nicht zum Training von Modellen verwendet. Es findet keine automatisierte
         Entscheidungsfindung mit Rechtswirkung statt.</P>
 
-      <H>6. Hosting</H>
+      <H>6. E-Mail-Benachrichtigungen</H>
+      <P>Wenn du Benachrichtigungen aktiviert hast, senden wir dir E-Mails über den Dienstleister
+        Resend (Region EU/Irland). Übermittelt werden dafür nur deine E-Mail-Adresse und ein
+        inhaltsloser Hinweistext. <strong>Unsere E-Mails enthalten niemals Inhalte aus deinen
+        Einträgen, Konflikten oder Nachrichten.</strong> Die Häufigkeit kannst du jederzeit im
+        Bereich „Über dich → Benachrichtigungen" ändern oder den Versand ganz abstellen.</P>
+
+      <H>7. Hosting</H>
       <P>Datenhaltung und Authentifizierung: Supabase (Datenbank-Region: EU/Frankfurt).
-        Auslieferung der Web-Oberfläche: Netlify. Mit den Anbietern bestehen
+        Auslieferung der Web-Oberfläche: Vercel. Mit den Anbietern bestehen
         Auftragsverarbeitungsverträge.</P>
 
-      <H>7. Keine Werbung, kein Tracking</H>
+      <H>8. Keine Werbung, kein Tracking</H>
       <P>Wir setzen keine Analyse-, Werbe- oder Tracking-Dienste ein und geben deine Daten nicht
         zu Werbezwecken weiter. Es werden nur technisch notwendige Speichervorgänge im Browser
         genutzt (Anmelde-Sitzung); ein Cookie-Banner ist daher nicht erforderlich
         (§ 25 Abs. 2 TDDDG).</P>
 
-      <H>8. Speicherdauer und Löschung</H>
+      <H>9. Speicherdauer und Löschung</H>
       <P>Deine Daten bleiben gespeichert, solange dein Konto besteht. Auf Wunsch löschen wir dein
         Konto und alle zugehörigen Inhalte vollständig — sende dazu eine formlose E-Mail an
         {" "}{KONTAKT.email}. Hinweis: Gemeinsame Inhalte (z.B. Chat, Beziehungsbilder) betreffen
         beide Partner; bei einseitigem Löschwunsch entfernen wir deine eigenen Inhalte und
         deine Beiträge.</P>
 
-      <H>9. Deine Rechte</H>
+      <H>10. Deine Rechte</H>
       <P>Du hast das Recht auf Auskunft (Art. 15), Berichtigung (Art. 16), Löschung (Art. 17),
         Einschränkung (Art. 18), Datenübertragbarkeit (Art. 20) und Widerspruch (Art. 21) sowie
         das Recht, deine Einwilligung jederzeit zu widerrufen. Du kannst dich zudem bei einer

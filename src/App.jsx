@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
-import { supabase } from "./supabase.js";
-import { C, st, font, Btn, Tag, Shell, ErrorNote } from "./ui.jsx";
+import { supabase, callAI } from "./supabase.js";
+import { C, st, font, Btn, Tag, Shell, ErrorNote, InviteBox } from "./ui.jsx";
 import Diary from "./sections/Diary.jsx";
 import Conflicts from "./sections/Conflicts.jsx";
 import SharedChat from "./sections/SharedChat.jsx";
@@ -8,6 +8,11 @@ import AboutYou from "./sections/AboutYou.jsx";
 import Report from "./sections/Report.jsx";
 import Landing from "./Landing.jsx";
 import AdminDashboard from "./AdminDashboard.jsx";
+
+function codeAusUrl() {
+  try { return new URLSearchParams(window.location.search).get("code") || ""; }
+  catch { return ""; }
+}
 
 export default function App() {
   const [session, setSession] = useState(undefined);
@@ -41,8 +46,9 @@ export default function App() {
 
   if (session === undefined) return <Shell><p style={st.hint}>Lade …</p></Shell>;
   if (!session) {
-    if (!showAuth) return <Shell><Landing onStart={() => setShowAuth(true)} /></Shell>;
-    return <AuthScreen onBack={() => setShowAuth(false)} />;
+    const eingeladen = !!codeAusUrl();
+    if (!showAuth && !eingeladen) return <Shell><Landing onStart={() => setShowAuth(true)} /></Shell>;
+    return <AuthScreen onBack={() => setShowAuth(false)} eingeladen={eingeladen} />;
   }
   if (membership === undefined) return <Shell><p style={st.hint}>Lade …</p></Shell>;
   if (isAdmin) return <AdminDashboard />;
@@ -51,8 +57,8 @@ export default function App() {
 }
 
 /* ─── Anmeldung ─────────────────────────────────────────── */
-function AuthScreen({ onBack }) {
-  const [mode, setMode] = useState("login");
+function AuthScreen({ onBack, eingeladen }) {
+  const [mode, setMode] = useState(eingeladen ? "signup" : "login");
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
   const [error, setError] = useState(null);
@@ -89,6 +95,12 @@ function AuthScreen({ onBack }) {
           Was du hier schreibst, sieht dein Partner nie im Original.
         </p>
         <div style={st.card}>
+          {eingeladen && mode === "signup" && (
+            <p style={{ ...st.body, background: C.paper, borderRadius: 10, padding: "12px 14px", marginBottom: 14, fontSize: 14.5 }}>
+              Du wurdest eingeladen. Leg dir hier dein eigenes Konto an — dein Zugang ist getrennt
+              von dem deiner Partnerin oder deines Partners, niemand liest deine Texte.
+            </p>
+          )}
           <ErrorNote>{error}</ErrorNote>
           {info && <p style={{ ...st.hint, color: C.ok }}>{info}</p>}
           <label style={st.hint}>E-Mail</label>
@@ -135,7 +147,7 @@ function AuthScreen({ onBack }) {
 /* ─── Onboarding: Paar-Raum erstellen oder beitreten ────── */
 function Onboarding({ session, onDone }) {
   const [name, setName] = useState("");
-  const [code, setCode] = useState("");
+  const [code, setCode] = useState(codeAusUrl());
   const [created, setCreated] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -153,6 +165,7 @@ function Onboarding({ session, onDone }) {
     const { error } = await supabase.rpc("join_couple", { p_code: code.trim().toLowerCase(), p_name: name.trim() });
     setBusy(false);
     if (error) { setError("Beitritt fehlgeschlagen. Stimmt der Einladungscode?"); return; }
+    try { await callAI({ action: "notify", kind: "partner_joined" }); } catch { /* optional */ }
     onDone();
   }
 
@@ -162,8 +175,8 @@ function Onboarding({ session, onDone }) {
         <div style={{ maxWidth: 480, margin: "0 auto", paddingTop: 48, textAlign: "center" }}>
           <h1 style={st.h1}>Euer Raum ist bereit</h1>
           <p style={st.hint}>Teile diesen Einladungscode mit deiner Partnerin oder deinem Partner:</p>
-          <div style={{ ...st.card, fontFamily: font.display, fontSize: 32, letterSpacing: "0.15em", margin: "20px 0" }}>
-            {created.invite_code}
+          <div style={{ ...st.card, margin: "20px 0" }}>
+            <InviteBox code={created.invite_code} />
           </div>
           <Btn onClick={onDone}>Weiter zum Tagebuch</Btn>
         </div>

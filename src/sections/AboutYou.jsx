@@ -31,6 +31,52 @@ export const QUESTIONS = [
   { id: "q15", block: "Prägung", text: "Was sollte Zwischenraum sonst noch über dich wissen? (optional)", type: "text", optional: true },
 ];
 
+function Benachrichtigungen({ membership }) {
+  const [freq, setFreq] = useState(null);
+  const [status, setStatus] = useState(null);
+
+  useEffect(() => {
+    supabase.from("couple_members").select("email_freq")
+      .eq("user_id", membership.user_id).maybeSingle()
+      .then(({ data }) => setFreq(data?.email_freq ?? "daily"));
+  }, []);
+
+  async function setzen(wert) {
+    setFreq(wert); setStatus(null);
+    const { error } = await supabase.from("couple_members")
+      .update({ email_freq: wert }).eq("user_id", membership.user_id);
+    setStatus(error ? "Konnte nicht gespeichert werden." : "✓ Gespeichert");
+    setTimeout(() => setStatus(null), 2500);
+  }
+
+  const optionen = [
+    ["none", "Gar nicht"],
+    ["daily", "Einmal am Tag"],
+    ["instant", "Bei jeder neuen Nachricht"],
+  ];
+
+  return (
+    <section style={st.card}>
+      <h2 style={st.h2}>Benachrichtigungen</h2>
+      <p style={st.hint}>
+        Wann sollen wir dir eine E-Mail schreiben, wenn es bei euch weitergeht?
+        In unseren E-Mails stehen <strong>niemals Inhalte</strong> — nur der Hinweis, dass es
+        etwas Neues gibt.
+      </p>
+      <div style={{ display: "grid", gap: 8 }}>
+        {optionen.map(([wert, label]) => (
+          <Btn key={wert} variant={freq === wert ? "who" : "ghost"} role={membership.role}
+            onClick={() => setzen(wert)}
+            style={{ textAlign: "left", color: freq === wert ? "#fff" : C.ink }}>
+            {freq === wert ? "✓ " : ""}{label}
+          </Btn>
+        ))}
+      </div>
+      {status && <p style={{ ...st.hint, marginTop: 8 }}>{status}</p>}
+    </section>
+  );
+}
+
 export default function AboutYou({ membership }) {
   const [row, setRow] = useState(undefined);
   const [profile, setProfile] = useState("");
@@ -105,6 +151,7 @@ export default function AboutYou({ membership }) {
           </p>
           <Btn variant="ghost" onClick={unskip}>Fragebogen doch machen</Btn>
         </section>
+        <Benachrichtigungen membership={membership} />
         <section style={st.card}>
           <h2 style={st.h2}>So versteht dich Zwischenraum</h2>
           <p style={{ ...st.body, whiteSpace: "pre-wrap" }}>{profile || "(noch leer — dein erster Tagebucheintrag füllt es)"}</p>
@@ -169,6 +216,7 @@ export default function AboutYou({ membership }) {
         <p style={st.hint}>Dein verdichtetes Profil — es wächst mit jedem Eintrag weiter. Nur du siehst es.</p>
         <p style={{ ...st.body, whiteSpace: "pre-wrap" }}>{profile || "(noch leer)"}</p>
       </section>
+      <Benachrichtigungen membership={membership} />
     </div>
   );
 }
