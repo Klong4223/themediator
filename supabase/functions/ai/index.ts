@@ -19,7 +19,7 @@ const cors = {
 // "openai" oder "anthropic". Beim Wechsel: nur diese Zeile aendern
 // und das passende Secret setzen (OPENAI_API_KEY bzw. ANTHROPIC_API_KEY).
 const PROVIDER = "openai";
-const OPENAI_MODEL = "gpt-5.6-terra";        // Standard fuer laufende Interaktionen
+const OPENAI_MODEL = "gpt-5.6";              // Standard: bewusst das starke Modell (Qualitaet vor Kosten)
 const OPENAI_MODEL_STRONG = "gpt-5.6";       // Tiefenanalyse (Beziehungsbild)
 const ANTHROPIC_MODEL = "claude-sonnet-4-6";
 const ANTHROPIC_MODEL_STRONG = "claude-opus-4-8";
@@ -215,12 +215,25 @@ Antworte nur mit der Impression.`);
       const verlauf = `Eintrag: ${entry.content}\nZwischenraum: ${entry.ai_feedback ?? ""}\n` +
         (thread ?? []).map((m) => `${m.role === "user" ? (member.display_name ?? "Person") : "Zwischenraum"}: ${m.content}`).join("\n");
 
-      const abschluss = userTurns >= 3;
+      const HARTES_LIMIT = 12;                 // Notbremse, nicht der Regelfall
+      const nahAmLimit = userTurns >= HARTES_LIMIT - 2;
+      const erzwingeSchluss = userTurns >= HARTES_LIMIT;
       const aiText = await claude(`${GRUNDREGELN}
 
-AUFGABE: Du fuehrst im Tagebuch eine kurze, begrenzte Vertiefung zu EINEM Eintrag — wie eine Therapiesitzung mit klarem Ende, kein offener Chat. ${abschluss
-        ? `Dies ist die ABSCHLUSSRUNDE. Antworte auf die letzte Nachricht, fasse in 2-3 Saetzen wuerdigend zusammen, was in diesem Faden entstanden ist, und beende die Sitzung aktiv und warm (z.B. mit der Einladung, es wirken zu lassen und bei Bedarf morgen einen neuen Eintrag zu schreiben). Max. 130 Woerter. Stelle KEINE neue Frage.`
-        : `Vertiefe: Antworte warm und konkret auf die letzte Nachricht (max. 110 Woerter). Du darfst genau eine weiterfuehrende Frage stellen. Noch ${3 - userTurns} Runde(n) bis zum Abschluss — arbeite auf einen natuerlichen Bogen hin.`}
+AUFGABE: Du fuehrst im Tagebuch ein vertiefendes Gespraech zu EINEM Eintrag — wie ein Therapeut in einer Sitzung: so lange, wie es traegt, und mit einem bewussten Ende, wenn es rund ist.
+
+${erzwingeSchluss
+        ? `Dieses Gespraech ist sehr lang geworden. Bringe es jetzt zu einem warmen Abschluss: antworte auf die letzte Nachricht, fasse wuerdigend zusammen, was entstanden ist, und lade dazu ein, es wirken zu lassen und bei Bedarf einen neuen Eintrag zu beginnen. Max. 160 Woerter, KEINE neue Frage.`
+        : `Antworte warm und konkret auf die letzte Nachricht. Passe die Laenge dem Gewicht an (60-220 Woerter).
+
+ENTSCHEIDE SELBST, ob das Gespraech weitergeht:
+- Solange die Person in Bewegung ist, neue Aspekte auftauchen oder sie sichtlich an etwas arbeitet: FUEHRE WEITER und stelle genau eine weiterfuehrende Frage.
+- Erst wenn ein natuerlicher Bogen erreicht ist (die Person hat etwas fuer sich geklaert, wiederholt sich, oder es ist alles gesagt): schliesse warm ab, fasse kurz zusammen und stelle KEINE neue Frage.
+- Brich niemals ab, solange das Gespraech der Person erkennbar hilft. Ein hilfreiches Gespraech zu beenden ist schlimmer als eines, das eine Runde zu lang laeuft.${nahAmLimit ? "\n- Hinweis: Das Gespraech ist bereits sehr lang. Steuere behutsam auf einen guten Abschluss zu." : ""}
+
+Setze ans ENDE deiner Antwort in einer eigenen Zeile exakt eines von beiden:
+[WEITER]  — wenn das Gespraech weitergehen soll
+[ENDE]    — wenn du gerade abgeschlossen hast`}
 
 Name der Person: ${member.display_name ?? "unbekannt"}
 
@@ -233,15 +246,19 @@ ${verlauf}
 
 Antworte nur mit deiner Nachricht.`);
 
+      const willEnde = /\[ENDE\]\s*$/.test(aiText.trim());
+      const sichtbar = aiText.replace(/\[(WEITER|ENDE)\]\s*$/, "").trim();
+      const abschluss = erzwingeSchluss || willEnde;
+
       await admin.from("diary_replies").insert({
-        entry_id: entry.id, couple_id: member.couple_id, user_id: user.id, role: "ai", content: aiText,
+        entry_id: entry.id, couple_id: member.couple_id, user_id: user.id, role: "ai", content: sichtbar,
       });
       if (abschluss) {
         await admin.from("diary_entries").update({ thread_closed: true }).eq("id", entry.id);
         await updateProfile(admin, member.couple_id, user.id, myProfile,
           `Vertiefender Dialog zum Tagebucheintrag (Verlauf): ${verlauf.slice(0, 3000)}`);
       }
-      return json({ ok: true, reply: aiText, closed: abschluss });
+      return json({ ok: true, reply: sichtbar, closed: abschluss });
     }
 
     // ─── Konflikt: Reflexion, Vermittlung, Beschoenigungs-Check ─
@@ -664,6 +681,40 @@ Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","..."]}`, 700);
         await admin.from("email_events").update({ included_in_daily: true }).in("id", agg.ids);
       }
       return json({ ok: true, recipients: sent });
+    }
+
+    // ─── Konto loeschen (DSGVO Art. 17) ─────────────────────
+    if (body.action === "delete_account") {
+      const cid = member.couple_id;
+      // Eigene Inhalte
+      await admin.from("diary_replies").delete().eq("user_id", user.id);
+      await admin.from("diary_entries").delete().eq("user_id", user.id);
+      await admin.from("conflicts").delete().eq("user_id", user.id);
+      await admin.from("assessments").delete().eq("user_id", user.id);
+      await admin.from("probes").delete().eq("user_id", user.id);
+      await admin.from("mirrors").delete().eq("user_id", user.id);
+      await admin.from("ai_profiles").delete().eq("user_id", user.id);
+      await admin.from("chat_messages").delete().eq("sender_id", user.id);
+      await admin.from("email_events").delete().eq("recipient_id", user.id);
+      // Gemeinsame Berichte enthalten Material beider Seiten
+      await admin.from("reports").delete().eq("couple_id", cid);
+      // Mitgliedschaft loesen und Gate schliessen
+      await admin.from("couple_members").delete().eq("user_id", user.id);
+      const { count } = await admin.from("couple_members")
+        .select("user_id", { count: "exact", head: true }).eq("couple_id", cid);
+      if ((count ?? 0) === 0) {
+        await admin.from("couples").delete().eq("id", cid);   // niemand mehr da
+      } else {
+        await admin.from("couple_state").update({
+          gate_open: false,
+          readiness: "Eine Person hat den Raum verlassen. Ihre Inhalte wurden vollstaendig geloescht.",
+          updated_at: new Date().toISOString(),
+        }).eq("couple_id", cid);
+      }
+      // Konto selbst
+      const { error: delErr } = await admin.auth.admin.deleteUser(user.id);
+      if (delErr) return json({ error: delErr.message }, 500);
+      return json({ ok: true });
     }
 
     // ─── Chat-Moderation ────────────────────────────────────

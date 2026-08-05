@@ -7,6 +7,7 @@ import SharedChat from "./sections/SharedChat.jsx";
 import AboutYou from "./sections/AboutYou.jsx";
 import Report from "./sections/Report.jsx";
 import Landing from "./Landing.jsx";
+import Settings from "./sections/Settings.jsx";
 import AdminDashboard from "./AdminDashboard.jsx";
 
 function codeAusUrl() {
@@ -66,6 +67,17 @@ function AuthScreen({ onBack, eingeladen }) {
   const [busy, setBusy] = useState(false);
   const [consent, setConsent] = useState(false);
 
+  async function reset() {
+    if (!email) { setError("Bitte trag zuerst deine E-Mail-Adresse ein."); return; }
+    setError(null); setInfo(null); setBusy(true);
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: window.location.origin,
+    });
+    setBusy(false);
+    if (error) { setError(error.message); return; }
+    setInfo("Wir haben dir einen Link zum Zurücksetzen geschickt. Schau auch im Spam-Ordner nach.");
+  }
+
   async function submit() {
     setError(null); setInfo(null); setBusy(true);
     try {
@@ -78,7 +90,7 @@ function AuthScreen({ onBack, eingeladen }) {
           options: { data: { einwilligung_art9: true, einwilligung_zeitpunkt: new Date().toISOString() } },
         });
         if (error) throw error;
-        if (data.user && !data.session) setInfo("Konto erstellt. Bitte bestätige deine E-Mail-Adresse und melde dich dann an.");
+        if (data.user && !data.session) setInfo("Konto erstellt. Wir haben dir eine Bestätigungsmail geschickt — bitte klick den Link darin. Schau unbedingt auch im Spam-Ordner nach: Unsere Adresse ist noch neu, deshalb landen die Mails dort manchmal.");
       }
     } catch (e) {
       setError(e.message || "Anmeldung fehlgeschlagen.");
@@ -125,6 +137,12 @@ function AuthScreen({ onBack, eingeladen }) {
             <Btn onClick={submit} disabled={busy || !email || pw.length < 6 || (mode === "signup" && !consent)}>
               {mode === "login" ? "Anmelden" : "Konto erstellen"}
             </Btn>
+            {mode === "login" && (
+              <button onClick={reset}
+                style={{ background: "none", border: "none", color: C.inkSoft, fontSize: 14, cursor: "pointer", fontFamily: "inherit", textDecoration: "underline" }}>
+                Passwort vergessen?
+              </button>
+            )}
             <button onClick={() => setMode(mode === "login" ? "signup" : "login")}
               style={{ background: "none", border: "none", color: C.inkSoft, fontSize: 14, cursor: "pointer", fontFamily: "inherit", textDecoration: "underline" }}>
               {mode === "login" ? "Neu hier? Konto erstellen" : "Schon ein Konto? Anmelden"}
@@ -229,6 +247,7 @@ function Main({ session, membership }) {
     ["conflicts", "Themen & Konflikte"],
     ["chat", gateOpen ? "Gemeinsam" : "Gemeinsam 🔒"],
     ["report", "Beziehungsbild"],
+    ["settings", "⚙ Einstellungen"],
   ];
 
   return (
@@ -268,6 +287,7 @@ function Main({ session, membership }) {
       {tab === "conflicts" && <Conflicts membership={membership} />}
       {tab === "chat" && <SharedChat membership={membership} state={state} refreshState={loadState} />}
       {tab === "report" && <Report membership={membership} />}
+      {tab === "settings" && <Settings membership={membership} onChanged={loadState} />}
     </Shell>
   );
 }

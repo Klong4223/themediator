@@ -45,9 +45,12 @@ export default function Diary({ membership }) {
     if (!text) return;
     setReplyBusy(entryId); setError(null);
     try {
-      await callAI({ action: "diary_reply", entry_id: entryId, content: text });
+      const res = await callAI({ action: "diary_reply", entry_id: entryId, content: text });
       setReplyDrafts((d) => ({ ...d, [entryId]: "" }));
       await load();
+      if (res?.closed) {
+        setEntries((prev) => prev.map((x) => x.id === entryId ? { ...x, thread_closed: true } : x));
+      }
     } catch (e) {
       setError("Antwort konnte nicht gesendet werden: " + (e?.message || JSON.stringify(e)));
     }
@@ -165,8 +168,11 @@ export default function Diary({ membership }) {
               </div>
             </div>
           )}
-          {e.thread_closed && (
-            <p style={{ ...st.hint, marginTop: 10 }}>✓ Dieser Faden ist abgeschlossen — ein neuer Eintrag öffnet einen neuen.</p>
+          {e.thread_closed && (replies[e.id] || []).length > 0 && (
+            <p style={{ ...st.hint, marginTop: 10 }}>
+              ✓ Dieses Gespräch ist abgeschlossen. Wenn dich davon etwas weiter beschäftigt,
+              schreib einen neuen Eintrag — er öffnet ein neues Gespräch.
+            </p>
           )}
         </section>
       ))}

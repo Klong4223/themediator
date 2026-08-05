@@ -90,11 +90,13 @@ export function DatenschutzText() {
         (§ 25 Abs. 2 TDDDG).</P>
 
       <H>9. Speicherdauer und Löschung</H>
-      <P>Deine Daten bleiben gespeichert, solange dein Konto besteht. Auf Wunsch löschen wir dein
-        Konto und alle zugehörigen Inhalte vollständig — sende dazu eine formlose E-Mail an
-        {" "}{KONTAKT.email}. Hinweis: Gemeinsame Inhalte (z.B. Chat, Beziehungsbilder) betreffen
-        beide Partner; bei einseitigem Löschwunsch entfernen wir deine eigenen Inhalte und
-        deine Beiträge.</P>
+      <P>Deine Daten bleiben gespeichert, solange dein Konto besteht. Du kannst dein Konto
+        jederzeit selbst löschen (Bereich „Einstellungen → Konto löschen"). Dabei werden alle
+        deine Inhalte unwiderruflich entfernt: Tagebuch, Themen und Konflikte, Fragebogen,
+        Profil, Spiegel und deine Nachrichten. Gemeinsame Beziehungsbilder werden ebenfalls
+        gelöscht, da sie aus deinem Material entstanden sind. Der Paar-Raum bleibt für die
+        andere Person mit deren eigenen Inhalten bestehen. Alternativ genügt eine formlose
+        E-Mail an {KONTAKT.email}.</P>
 
       <H>10. Deine Rechte</H>
       <P>Du hast das Recht auf Auskunft (Art. 15), Berichtigung (Art. 16), Löschung (Art. 17),
