@@ -1,0 +1,117 @@
+import React from "react";
+import { LegalFooter } from "./Legal.jsx";
+
+export const C = {
+  paper: "#F5F6F3",
+  card: "#FFFFFF",
+  ink: "#232B38",
+  inkSoft: "#5A6472",
+  line: "#E3E6E0",
+  a: "#B07C2E",
+  aSoft: "#F6EEDD",
+  b: "#3F7484",
+  bSoft: "#E3EEF1",
+  danger: "#A33B2E",
+  dangerSoft: "#F8E8E5",
+  ok: "#3E7A4E",
+};
+
+export const font = {
+  display: "'Fraunces', Georgia, serif",
+  body: "'Source Sans 3', system-ui, sans-serif",
+};
+
+export const st = {
+  h1: { fontFamily: font.display, fontSize: 34, fontWeight: 600, color: C.ink, letterSpacing: "-0.01em", margin: 0 },
+  h2: { fontFamily: font.display, fontSize: 19, fontWeight: 600, margin: 0, color: C.ink },
+  hint: { fontSize: 13.5, color: C.inkSoft, margin: "6px 0 12px", lineHeight: 1.5 },
+  body: { fontSize: 15, lineHeight: 1.65, color: C.ink, margin: "6px 0 0" },
+  card: { background: C.card, border: `1px solid ${C.line}`, borderRadius: 14, padding: "20px 22px" },
+  input: {
+    width: "100%", border: `1px solid ${C.line}`, borderRadius: 10, padding: "12px 14px",
+    fontSize: 15, fontFamily: "inherit", color: C.ink, background: "#FDFDFC", boxSizing: "border-box",
+  },
+  textarea: {
+    width: "100%", border: `1px solid ${C.line}`, borderRadius: 10, padding: 14, fontSize: 15,
+    fontFamily: "inherit", color: C.ink, background: "#FDFDFC", resize: "vertical", minHeight: 130, boxSizing: "border-box",
+  },
+};
+
+export function Btn({ children, onClick, disabled, variant = "primary", role, type = "button", style }) {
+  const bg = variant === "primary" ? C.ink : variant === "who" ? (role === "A" ? C.a : C.b) : "transparent";
+  const color = variant === "ghost" ? C.inkSoft : "#fff";
+  return (
+    <button
+      type={type}
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        background: disabled ? C.line : bg,
+        color: disabled ? C.inkSoft : color,
+        border: variant === "ghost" ? `1px solid ${C.line}` : "none",
+        borderRadius: 10, padding: "11px 20px", fontSize: 15, fontWeight: 600,
+        cursor: disabled ? "default" : "pointer", fontFamily: "inherit", ...style,
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+export function Tag({ role, children }) {
+  const col = role === "A" ? C.a : C.b;
+  const soft = role === "A" ? C.aSoft : C.bSoft;
+  return (
+    <span style={{
+      background: soft, color: col, fontSize: 12, fontWeight: 700, letterSpacing: "0.06em",
+      padding: "3px 10px", borderRadius: 999, textTransform: "uppercase", whiteSpace: "nowrap",
+    }}>
+      {children}
+    </span>
+  );
+}
+
+export function Convergence() {
+  return (
+    <svg width="100%" height="44" viewBox="0 0 600 44" preserveAspectRatio="none" aria-hidden="true">
+      <path d="M40 4 C 200 4, 260 40, 300 40" stroke={C.a} strokeWidth="2.5" fill="none" />
+      <path d="M560 4 C 400 4, 340 40, 300 40" stroke={C.b} strokeWidth="2.5" fill="none" />
+      <circle cx="300" cy="40" r="4" fill={C.ink} />
+    </svg>
+  );
+}
+
+export function AIBlock({ title, text }) {
+  if (!text) return null;
+  return (
+    <div style={{ background: C.paper, borderLeft: `3px solid ${C.ink}`, borderRadius: 8, padding: "12px 14px", marginTop: 12 }}>
+      <span style={{ fontSize: 12, fontWeight: 700, color: C.ink, letterSpacing: "0.06em" }}>{title}</span>
+      <p style={{ ...st.body, marginTop: 4, whiteSpace: "pre-wrap" }}>{text}</p>
+    </div>
+  );
+}
+
+export function ErrorNote({ children }) {
+  if (!children) return null;
+  return (
+    <div style={{ background: C.dangerSoft, color: C.danger, borderRadius: 10, padding: "12px 16px", marginBottom: 16, fontSize: 14 }}>
+      {children}
+    </div>
+  );
+}
+
+export function Shell({ children }) {
+  return (
+    <div style={{ background: C.paper, minHeight: "100vh", padding: "24px 16px 72px", color: C.ink }}>
+      <style>{`
+        * { box-sizing: border-box; }
+        body { margin: 0; }
+        button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid ${C.ink}; outline-offset: 2px; }
+        @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+        h1, h2, h3, p, span, li, div { overflow-wrap: anywhere; word-break: normal; }
+        img, svg { max-width: 100%; }
+      `}</style>
+      <div style={{ maxWidth: 860, margin: "0 auto", fontFamily: font.body }}>{children}<LegalFooter /></div>
+    </div>
+  );
+}
