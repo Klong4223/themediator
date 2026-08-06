@@ -148,9 +148,14 @@ async function starteHintergrundantwort(prompt: string, maxTokens: number, stron
     },
     body: JSON.stringify({
       model: strong ? OPENAI_MODEL_STRONG : OPENAI_MODEL,
-      input: prompt,
+      // Strukturierte Form statt nacktem String — entspricht dem bewaehrten
+      // messages-Format der Chat-Completions-API, mit der genau dieser
+      // Prompt zuvor zuverlaessig funktioniert hat.
+      input: [{ role: "user", content: prompt }],
       background: true,
-      max_output_tokens: Math.max(maxTokens * 5, 16000),
+      // Grosszuegiger als zuvor: mehr Raum fuer Denk-Tokens VOR dem eigentlichen
+      // Text, damit die Reasoning-Phase den sichtbaren Text nicht verdraengt.
+      max_output_tokens: Math.max(maxTokens * 8, 24000),
     }),
   });
   if (!res.ok) throw new Error(`OpenAI (Start) ${res.status}: ${await res.text()}`);
@@ -196,8 +201,14 @@ async function holeHintergrundantwort(responseId: string): Promise<Hintergrundst
     if (refusal) {
       return { fertig: true, fehler: `Vom Modell abgelehnt: ${refusal.refusal ?? "(kein Grund angegeben)"}` };
     }
-    const itemTypen = items.map((it) => it.type ?? "?").join(", ") || "keine";
-    return { fertig: true, fehler: `Leere Antwort trotz Status 'completed' (Antwort-Elemente: ${itemTypen}).` };
+    // Kein refusal gefunden — trotzdem Struktur-Details sammeln (Typen und
+    // Status je Element, Content-Subtypen), damit ein erneutes Scheitern
+    // sofort einordbar ist, statt wieder nur "leer" zu zeigen.
+    const details = items.map((it: any) => {
+      const subTypen = Array.isArray(it.content) ? it.content.map((c: any) => c?.type ?? "?").join("/") : "-";
+      return `${it.type ?? "?"}(status=${it.status ?? "?"}, content=${subTypen})`;
+    }).join(", ") || "keine";
+    return { fertig: true, fehler: `Leere Antwort trotz Status 'completed' (Antwort-Elemente: ${details}).` };
   }
   const grund = data.incomplete_details?.reason ?? data.error?.message ?? "unbekannt";
   return { fertig: true, fehler: `OpenAI-Lauf beendet mit Status '${data.status}' (${grund}).` };
