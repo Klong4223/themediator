@@ -79,7 +79,7 @@ export function DatenschutzText() {
         Bereich „Über dich → Benachrichtigungen" ändern oder den Versand ganz abstellen.</P>
 
       <H>7. Hosting</H>
-      <P>Datenhaltung und Authentifizierung: Supabase (Datenbank-Region: EU/Frankfurt).
+      <P>Datenhaltung und Authentifizierung: Supabase (Datenbank-Region: EU/Irland).
         Auslieferung der Web-Oberfläche: Vercel. Mit den Anbietern bestehen
         Auftragsverarbeitungsverträge.</P>
 

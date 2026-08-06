@@ -2,6 +2,15 @@ import React, { useEffect, useState } from "react";
 import { supabase, callAI } from "../supabase.js";
 import { C, st, Btn, Convergence, ErrorNote } from "../ui.jsx";
 
+// Ein Lauf, der von der Laufzeitumgebung abgeräumt wird, bleibt in der
+// Datenbank auf "running" stehen — ohne diesen Riegel würde die Seite endlos
+// weiterwarten. Nach dieser Zeit gilt ein Lauf als abgebrochen.
+const ABGEBROCHEN_NACH_MS = 10 * 60 * 1000;
+
+const istHaengend = (zeile) =>
+  zeile.status === "running" &&
+  Date.now() - new Date(zeile.created_at).getTime() > ABGEBROCHEN_NACH_MS;
+
 export default function Report({ membership }) {
   const [myConsent, setMyConsent] = useState(false);
   const [partnerConsent, setPartnerConsent] = useState(false);
@@ -13,7 +22,9 @@ export default function Report({ membership }) {
   const [error, setError] = useState(null);
   const [letzterFehler, setLetzterFehler] = useState(null);
 
-  const laufend = reports.some((r) => r.status === "running") || mirrors.some((m) => m.status === "running");
+  // Hängende Läufe zählen nicht als "laufend" — sonst pollt die Seite ewig weiter.
+  const laufend = reports.some((r) => r.status === "running" && !istHaengend(r))
+    || mirrors.some((m) => m.status === "running" && !istHaengend(m));
 
   useEffect(() => {
     if (!laufend) return;
@@ -148,12 +159,19 @@ export default function Report({ membership }) {
             <span style={{ fontSize: 12, color: C.inkSoft }}>
               {new Date(m.created_at).toLocaleString("de-DE", { dateStyle: "long", timeStyle: "short" })}
             </span>
-            {m.status === "running" ? (
+            {m.status === "running" && !istHaengend(m) ? (
               <p style={{ ...st.body, marginTop: 6 }}>Zwischenraum schaut genau hin … Das dauert ein bis zwei Minuten.</p>
-            ) : m.status === "error" ? (
-              <p style={{ ...st.body, marginTop: 6, color: C.danger }}>
-                Fehlgeschlagen{m.error_msg ? `: ${m.error_msg}` : "."} Versuch es oben noch einmal.
-              </p>
+            ) : m.status === "error" || istHaengend(m) ? (
+              <div style={{ marginTop: 6 }}>
+                <p style={{ ...st.body, color: C.danger }}>
+                  {istHaengend(m)
+                    ? "Die Erstellung wurde abgebrochen — sie hat länger gedauert, als der Server zulässt."
+                    : `Fehlgeschlagen${m.error_msg ? `: ${m.error_msg}` : "."}`}
+                </p>
+                <Btn onClick={generateMirror} disabled={mirrorBusy}>
+                  {mirrorBusy ? "Neuer Versuch läuft …" : "Noch einmal versuchen"}
+                </Btn>
+              </div>
             ) : (
               <p style={{ ...st.body, whiteSpace: "pre-wrap", marginTop: 6 }}>{m.content}</p>
             )}
@@ -166,15 +184,24 @@ export default function Report({ membership }) {
           <span style={{ fontSize: 12, color: C.inkSoft }}>
             {new Date(r.created_at).toLocaleString("de-DE", { dateStyle: "long", timeStyle: "short" })}
           </span>
-          {r.status === "running" ? (
+          {r.status === "running" && !istHaengend(r) ? (
             <p style={{ ...st.body, marginTop: 8 }}>
               Zwischenraum schreibt euer Beziehungsbild … Das dauert ein bis zwei Minuten.
               Du kannst die Seite ruhig verlassen — der Bericht erscheint hier, sobald er fertig ist.
             </p>
-          ) : r.status === "error" ? (
-            <p style={{ ...st.body, marginTop: 8, color: C.danger }}>
-              Die Erstellung ist fehlgeschlagen{r.error_msg ? `: ${r.error_msg}` : "."} Versuch es oben noch einmal.
-            </p>
+          ) : r.status === "error" || istHaengend(r) ? (
+            <div style={{ marginTop: 8 }}>
+              <p style={{ ...st.body, color: C.danger }}>
+                {istHaengend(r)
+                  ? "Die Erstellung wurde abgebrochen — sie hat länger gedauert, als der Server zulässt."
+                  : `Die Erstellung ist fehlgeschlagen${r.error_msg ? `: ${r.error_msg}` : "."}`}
+              </p>
+              {both && (
+                <Btn onClick={generate} disabled={busy}>
+                  {busy ? "Neuer Versuch läuft …" : "Noch einmal versuchen"}
+                </Btn>
+              )}
+            </div>
           ) : (
             <p style={{ ...st.body, whiteSpace: "pre-wrap", marginTop: 8 }}>{r.content}</p>
           )}

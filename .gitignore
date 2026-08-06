@@ -5,3 +5,10 @@ dist
 .DS_Store
 *.log
 .vercel
+supabase/.temp
+
+# Datenbank-Abzüge enthalten die Rohtexte der Nutzerinnen und dürfen
+# unter keinen Umständen ins Repository geraten.
+*.sql.gz
+*.dump
+backups/

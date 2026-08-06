@@ -375,3 +375,32 @@ drop policy if exists "members: eigene Zeile aendern" on couple_members;
 create policy "members: eigene Zeile aendern" on couple_members
   for update using (user_id = auth.uid())
   with check (user_id = auth.uid());
+
+-- ─────────────────────────────────────────────────────────────
+-- Delta 2026-08-06: Hintergrundverarbeitung für Beziehungsbild
+-- und Spiegel. Die Zeile entsteht sofort mit status 'running',
+-- der Inhalt wird nachgetragen, sobald die KI fertig ist.
+-- ─────────────────────────────────────────────────────────────
+
+alter table reports add column if not exists status text not null default 'running';
+alter table reports add column if not exists error_msg text;
+alter table mirrors add column if not exists status text not null default 'running';
+alter table mirrors add column if not exists error_msg text;
+
+-- Der Inhalt ist beim Anlegen noch leer und wird später gefüllt.
+alter table reports alter column content drop not null;
+alter table mirrors alter column content drop not null;
+
+-- Aufräumen: Läufe, die von der Laufzeitumgebung abgeräumt wurden, bleiben
+-- ohne Zutun für immer auf 'running' — die Oberfläche wartet dann endlos.
+-- Die Edge Function erledigt das ab Version 2026-08-06c beim nächsten Anlauf
+-- selbst; dieses Skript räumt einmalig die Altlasten weg.
+update reports set status = 'error',
+       error_msg = 'Der Lauf wurde von der Laufzeitumgebung abgebrochen (Zeitlimit ueberschritten).'
+ where status = 'running' and coalesce(content, '') = ''
+   and created_at < now() - interval '15 minutes';
+
+update mirrors set status = 'error',
+       error_msg = 'Der Lauf wurde von der Laufzeitumgebung abgebrochen (Zeitlimit ueberschritten).'
+ where status = 'running' and coalesce(content, '') = ''
+   and created_at < now() - interval '15 minutes';

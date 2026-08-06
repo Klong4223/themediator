@@ -27,32 +27,89 @@ const ANTHROPIC_MODEL_STRONG = "claude-opus-4-8";
 const GRUNDREGELN = `Du bist "Zwischenraum", eine neutrale, allparteiliche Begleitinstanz fuer Paare. Regeln, die immer gelten:
 1. EPISTEMIK: Alles, was eine Person schreibt, ist ihre Perspektive, kein Faktum. Uebernimm nie die Deutung einer Seite als Wahrheit. Formuliere entsprechend ("du beschreibst", "aus deiner Sicht"). Nur was beide unabhaengig berichten, darfst du als gemeinsames Muster behandeln.
 2. NEUTRALITAET: Keine Schuldzuweisung, keine Parteinahme, kein Vorurteil. Wenn du bei einer Person nachbohrst, tue es bei der anderen mit gleichem Massstab.
-3. ABSTRAKTION: Wenn dir Informationen ueber die andere Person vorliegen, nutze sie nur als verdichtetes Verstaendnis. Zitiere NIE, gib NIE konkrete Formulierungen, Ereignisdetails oder Inhalte wieder, die die andere Person geschrieben hat. Hinweise formulierst du als offene Fragen oder allgemeine Beobachtungen.
+3. ABSTRAKTION — NUTZEN, ABER NICHT DURCHREICHEN: Wenn dir ein verdichtetes Verstaendnis der anderen Person vorliegt, NUTZE ES AKTIV UND SUBSTANZIELL. Genau daraus entsteht der Wert dieser Begleitung: Du bist der einzige Ort, an dem beide Perspektiven zusammenkommen. Sprich Beduerfnisse, Muster und Wirkungen der anderen Seite an, rege Perspektivwechsel an, benenne, wo zwei Menschen offenbar aneinander vorbeireden.
+   Die Grenze ist NICHT das Thema, sondern die Quelle: Du zitierst nie, gibst nie konkrete Formulierungen oder erzaehlte Einzelereignisse wieder und offenbarst nichts, was die andere Person erkennbar nur im Vertrauen geschrieben hat (ihre Zweifel, Plaene, Geheimnisse, intime Details). Formuliere als Beobachtung oder offene Frage ("Wie glaubst du, kommt dein Rueckzug bei ihr an?"), nie als Bericht ueber die andere Person ("sie hat geschrieben, dass...").
 4. GRENZEN: Du bist Beziehungsbegleitung, keine Therapie. Keine Diagnosen, keine tiefenpsychologischen Deutungen. Bleibe auf der Ebene von Verhalten, Beduerfnissen und Mustern.
 5. SICHERHEIT: Bei Hinweisen auf koerperliche Gewalt, Missbrauch, Selbst- oder Fremdgefaehrdung verlaesst du die Neutralitaet, benennst das klar und fuersorglich und verweist auf professionelle Hilfe (in DE: Hilfetelefon Gewalt gegen Frauen 116 016, Telefonseelsorge 0800 111 0 111, Notruf 112).
 6. SPRACHE: Antworte in der Sprache der Person (Deutsch oder Englisch), sprich sie mit "du" an. Kompakt und konkret, kein Therapeuten-Jargon.`;
 
-async function claude(prompt: string, maxTokens = 900, strong = false): Promise<string> {
+// Zeitbudget. Die Supabase-Laufzeit raeumt Hintergrund-Tasks nach rund 400
+// Sekunden hart ab — dann laeuft kein catch mehr, und eine angefangene Zeile
+// bliebe fuer immer auf "running" stehen (genau so sind am 06.08.2026 zwei
+// Beziehungsbilder stillschweigend verschwunden). Deshalb bricht jeder Aufruf
+// vorher selbst ab, damit der Fehler sichtbar in der Datenbank landet.
+const AUFRUF_FRIST_MS = 150_000;   // pro Modellaufruf
+const LAUF_FRIST_MS = 330_000;     // fuer einen kompletten Hintergrund-Lauf
+
+// Wieviel Zeit bleibt dem naechsten Aufruf? Wirft, wenn es sich nicht mehr
+// lohnt anzufangen — ein sauberer Fehler ist besser als ein harter Abbruch.
+function restfrist(start: number): number {
+  const rest = LAUF_FRIST_MS - (Date.now() - start);
+  if (rest < 20_000) {
+    throw new Error(
+      "Das Zeitbudget fuer diesen Lauf ist aufgebraucht, bevor der zweite Schritt beginnen konnte. " +
+      "Versuch es bitte noch einmal — meist klappt der naechste Anlauf.",
+    );
+  }
+  return Math.min(AUFRUF_FRIST_MS, rest);
+}
+
+async function claude(
+  prompt: string, maxTokens = 2500, strong = false, fristMs = AUFRUF_FRIST_MS,
+): Promise<string> {
+  const abbruch = new AbortController();
+  const wecker = setTimeout(() => abbruch.abort(), fristMs);
+  try {
+    return await modellAufruf(prompt, maxTokens, strong, abbruch.signal);
+  } catch (e) {
+    if (abbruch.signal.aborted) {
+      throw new Error(
+        `Das Modell hat innerhalb von ${Math.round(fristMs / 1000)} Sekunden nicht geantwortet. ` +
+        `Der Vorgang wurde abgebrochen, damit er nicht stillschweigend haengen bleibt.`,
+      );
+    }
+    throw e;
+  } finally {
+    clearTimeout(wecker);
+  }
+}
+
+async function modellAufruf(
+  prompt: string, maxTokens: number, strong: boolean, signal: AbortSignal,
+): Promise<string> {
   if (PROVIDER === "openai") {
     if (!Deno.env.get("OPENAI_API_KEY")) {
       throw new Error("Secret OPENAI_API_KEY ist nicht gesetzt (Supabase > Edge Functions > Secrets).");
     }
     const res = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
+      signal,
       headers: {
         "content-type": "application/json",
         "authorization": `Bearer ${Deno.env.get("OPENAI_API_KEY") ?? ""}`,
       },
       body: JSON.stringify({
         model: strong ? OPENAI_MODEL_STRONG : OPENAI_MODEL,
-        max_completion_tokens: maxTokens,
+        // WICHTIG: Bei Reasoning-Modellen zaehlen die internen Denk-Tokens
+        // gegen dieses Budget. Deshalb grosszuegig kalkulieren, sonst kommt
+        // eine leere Antwort zurueck (finish_reason: "length").
+        max_completion_tokens: Math.max(maxTokens * 5, 16000),
         messages: [{ role: "user", content: prompt }],
       }),
     });
     if (!res.ok) throw new Error(`OpenAI ${res.status}: ${await res.text()}`);
     const data = await res.json();
-    const out = (data.choices?.[0]?.message?.content ?? "").trim();
-    if (!out) throw new Error(`OpenAI lieferte eine leere Antwort (Modell: ${strong ? OPENAI_MODEL_STRONG : OPENAI_MODEL}).`);
+    const choice = data.choices?.[0];
+    const out = (choice?.message?.content ?? "").trim();
+    if (!out) {
+      const grund = choice?.finish_reason ?? "unbekannt";
+      const denk = data.usage?.completion_tokens_details?.reasoning_tokens;
+      throw new Error(
+        `Leere Antwort vom Modell ${strong ? OPENAI_MODEL_STRONG : OPENAI_MODEL} ` +
+        `(finish_reason: ${grund}${denk ? `, Denk-Tokens: ${denk}` : ""}). ` +
+        `Meist bedeutet das: das Token-Budget war zu knapp.`,
+      );
+    }
     return out;
   }
   if (!Deno.env.get("ANTHROPIC_API_KEY")) {
@@ -60,6 +117,7 @@ async function claude(prompt: string, maxTokens = 900, strong = false): Promise<
   }
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
+    signal,
     headers: {
       "content-type": "application/json",
       "x-api-key": Deno.env.get("ANTHROPIC_API_KEY") ?? "",
@@ -80,7 +138,30 @@ async function claude(prompt: string, maxTokens = 900, strong = false): Promise<
     .trim();
 }
 
-const VERSION = "2026-08-05";
+const VERSION = "2026-08-06c";
+
+// Supabase-Laufzeit: Arbeit nach dem Senden der Antwort weiterlaufen lassen.
+declare const EdgeRuntime: { waitUntil(p: Promise<unknown>): void } | undefined;
+function imHintergrund(p: Promise<unknown>) {
+  if (typeof EdgeRuntime !== "undefined" && EdgeRuntime?.waitUntil) EdgeRuntime.waitUntil(p);
+  else void p;
+}
+
+// Wird ein Lauf von der Laufzeitumgebung abgeraeumt, kommt der catch-Zweig
+// nicht mehr zum Zug und die Zeile bleibt fuer immer auf "running" — die
+// Oberflaeche wartet dann endlos. Solche Leichen raeumen wir beim naechsten
+// Anlauf weg, damit niemand vor einem ewigen Ladehinweis sitzt.
+async function haengendeLaeufeAufraeumen(
+  admin: ReturnType<typeof createClient>,
+  tabelle: "reports" | "mirrors",
+  coupleId: string,
+) {
+  const grenze = new Date(Date.now() - 15 * 60_000).toISOString();
+  await admin.from(tabelle).update({
+    status: "error",
+    error_msg: "Der Lauf wurde von der Laufzeitumgebung abgebrochen (Zeitlimit ueberschritten).",
+  }).eq("couple_id", coupleId).eq("status", "running").lt("created_at", grenze);
+}
 const APP_URL = "https://zwischenraum.work";
 const MAIL_FROM = "Zwischenraum <hallo@zwischenraum.work>";
 
@@ -166,6 +247,8 @@ Deno.serve(async (req) => {
 
     const myProfile = await getProfile(admin, member.couple_id, user.id);
     const partnerProfile = partner ? await getProfile(admin, member.couple_id, partner.user_id) : "";
+    const myChronik = await getChronik(admin, user.id);
+    const partnerChronik = partner ? await getChronik(admin, partner.user_id) : "";
 
 
 
@@ -177,18 +260,30 @@ Deno.serve(async (req) => {
 
       const feedback = await claude(`${GRUNDREGELN}
 
-AUFGABE: Die Person hat einen Tagebucheintrag geschrieben. Gib eine persoenliche Impression. Passe die Laenge dem Gewicht des Eintrags an (60 Woerter bei Alltagsnotizen, bis 250 Woerter bei bedeutsamen Eintraegen). Sprich die Person mit Namen an, wenn er dir vorliegt. Beziehe dich, wo passend, auf ihre frueheren Themen und ihre Entwicklung ("in deinen letzten Eintraegen...", "du beschreibst zum wiederholten Mal..."). Spiegle, was du hoerst, wuerdige Ehrlichkeit und Zwischentoene, benenne Muster als Beobachtung oder Frage, und stelle am Ende genau eine weiterfuehrende Rueckfrage zur Selbstreflexion. Sei warm und nah, ohne Gefaelligkeit — Allparteilichkeit und Epistemik-Regeln gelten unveraendert. ${partnerProfile ? "Du kennst ein verdichtetes Verstaendnis der anderen Person (unten). Du darfst daraus einen behutsamen Perspektivwechsel anregen (Regel 3 strikt beachten: nichts zitieren, nichts Konkretes offenbaren)." : ""}
+AUFGABE: Die Person hat einen Tagebucheintrag geschrieben. Gib eine persoenliche Impression. Passe die Laenge dem Gewicht des Eintrags an (kurz bei Alltagsnotizen, ausfuehrlich bei bedeutsamen Eintraegen — es gibt keine Obergrenze, wenn der Eintrag sie rechtfertigt). Sprich die Person mit Namen an, wenn er dir vorliegt. Beziehe dich, wo passend, auf ihre frueheren Themen und ihre Entwicklung ("in deinen letzten Eintraegen...", "du beschreibst zum wiederholten Mal..."). Spiegle, was du hoerst, wuerdige Ehrlichkeit und Zwischentoene, benenne Muster als Beobachtung. Sei warm und nah, ohne Gefaelligkeit — Allparteilichkeit und Epistemik-Regeln gelten unveraendert.
+
+RUECKFRAGEN NUR, WENN SIE ETWAS OEFFNEN: Stelle am Ende hoechstens EINE Frage — und nur dann, wenn sie der Person wirklich weiterhilft: wenn etwas unklar, widerspruechlich oder erkennbar unfertig ist, wenn sie sichtlich mit etwas ringt, oder wenn eine Frage einen blinden Fleck beleuchten wuerde.
+KEINE Frage, wenn der Eintrag in sich abgeschlossen ist: eine Beobachtung, eine gute Nachricht, ein schoener Moment, eine Feststellung, eine kurze Notiz. Dann ist die angemessene Antwort, es einfach anzuerkennen und stehenzulassen. Eine Pflichtfrage macht aus einem leichten Moment eine Aufgabe — das ist ein Fehler.
+Pruefe vor jeder Frage: Wuerde ein guter Zuhoerer hier wirklich nachfragen, oder wuerde er einfach zuhoeren? Im Zweifel: keine Frage.
+
+ANGEMESSENHEIT: Passe dich dem Gewicht des Eintrags an. Bei etwas Erfreulichem darfst du dich mitfreuen — relativiere es nicht reflexhaft und warne nicht vorsorglich vor Enttaeuschung, wenn dazu kein konkreter Anlass besteht. Neutral heisst nicht distanziert, und es heisst auch nicht, jede gute Nachricht sofort einzuordnen. Wenn es dagegen etwas Wichtiges zu bedenken gibt, benenne es klar — Mahnen ist erlaubt, wenn es begruendet ist. ${partnerProfile ? "Du kennst ein verdichtetes Verstaendnis der anderen Person (unten). Du darfst daraus einen behutsamen Perspektivwechsel anregen (Regel 3 strikt beachten: nichts zitieren, nichts Konkretes offenbaren)." : ""}
 
 Name der Person: ${member.display_name ?? "unbekannt"}
 
-Verdichtetes Verstaendnis dieser Person bisher:
+=== DEIN WISSEN UEBER DIESE PERSON (ihr eigenes Material - vollstaendig verfuegbar) ===
+Verdichtetes Profil:
 ${myProfile || "(noch leer)"}
-${partnerProfile ? `\nVerdichtetes Verstaendnis der anderen Person (nur fuer deinen Blick, streng vertraulich):\n${partnerProfile}` : ""}
+${myChronik ? `\nChronik (dauerhafte Beobachtungen, aelteste zuerst):\n${myChronik}` : ""}
+
+${await eigenesMaterial(admin, member.couple_id, user.id)}
+
+=== DEIN WISSEN UEBER DIE ANDERE PERSON (streng vertraulich, Regel 3 beachten) ===
+${partnerProfile || partnerChronik ? `Verdichtetes Profil:\n${partnerProfile || "(leer)"}${partnerChronik ? `\n\nChronik:\n${partnerChronik}` : ""}` : "(noch nichts bekannt)"}
 
 Neuer Tagebucheintrag:
 """${entry.content}"""
 
-Antworte nur mit der Impression.`);
+Antworte nur mit der Impression.`, 2500);
 
       await admin.from("diary_entries").update({ ai_feedback: feedback }).eq("id", entry.id);
       await updateProfile(admin, member.couple_id, user.id, myProfile, `Tagebucheintrag: ${entry.content}`);
@@ -224,10 +319,10 @@ AUFGABE: Du fuehrst im Tagebuch ein vertiefendes Gespraech zu EINEM Eintrag — 
 
 ${erzwingeSchluss
         ? `Dieses Gespraech ist sehr lang geworden. Bringe es jetzt zu einem warmen Abschluss: antworte auf die letzte Nachricht, fasse wuerdigend zusammen, was entstanden ist, und lade dazu ein, es wirken zu lassen und bei Bedarf einen neuen Eintrag zu beginnen. Max. 160 Woerter, KEINE neue Frage.`
-        : `Antworte warm und konkret auf die letzte Nachricht. Passe die Laenge dem Gewicht an (60-220 Woerter).
+        : `Antworte warm und konkret auf die letzte Nachricht. Passe die Laenge dem Gewicht an — knapp, wenn es knapp sein darf, ausfuehrlich, wenn das Thema es braucht.
 
 ENTSCHEIDE SELBST, ob das Gespraech weitergeht:
-- Solange die Person in Bewegung ist, neue Aspekte auftauchen oder sie sichtlich an etwas arbeitet: FUEHRE WEITER und stelle genau eine weiterfuehrende Frage.
+- Solange die Person in Bewegung ist, neue Aspekte auftauchen oder sie sichtlich an etwas arbeitet: FUEHRE WEITER. Stelle eine Frage nur, wenn sie wirklich etwas oeffnet — manchmal traegt ein Gespraech auch ohne Frage weiter, weil eine Beobachtung dran ist.
 - Erst wenn ein natuerlicher Bogen erreicht ist (die Person hat etwas fuer sich geklaert, wiederholt sich, oder es ist alles gesagt): schliesse warm ab, fasse kurz zusammen und stelle KEINE neue Frage.
 - Brich niemals ab, solange das Gespraech der Person erkennbar hilft. Ein hilfreiches Gespraech zu beenden ist schlimmer als eines, das eine Runde zu lang laeuft.${nahAmLimit ? "\n- Hinweis: Das Gespraech ist bereits sehr lang. Steuere behutsam auf einen guten Abschluss zu." : ""}
 
@@ -237,14 +332,17 @@ Setze ans ENDE deiner Antwort in einer eigenen Zeile exakt eines von beiden:
 
 Name der Person: ${member.display_name ?? "unbekannt"}
 
-Verdichtetes Verstaendnis dieser Person:
+=== DEIN WISSEN UEBER DIESE PERSON ===
 ${myProfile || "(noch leer)"}
-${partnerProfile ? `\nVerdichtetes Verstaendnis der anderen Person (streng vertraulich, Abstraktionsregel 3 beachten):\n${partnerProfile}` : ""}
+${myChronik ? `\nChronik:\n${myChronik}` : ""}
+
+=== DEIN WISSEN UEBER DIE ANDERE PERSON (streng vertraulich, Regel 3) ===
+${partnerProfile || "(noch nichts bekannt)"}${partnerChronik ? `\n\nChronik:\n${partnerChronik}` : ""}
 
 Bisheriger Faden:
 ${verlauf}
 
-Antworte nur mit deiner Nachricht.`);
+Antworte nur mit deiner Nachricht.`, 2500);
 
       const willEnde = /\[ENDE\]\s*$/.test(aiText.trim());
       const sichtbar = aiText.replace(/\[(WEITER|ENDE)\]\s*$/, "").trim();
@@ -256,7 +354,7 @@ Antworte nur mit deiner Nachricht.`);
       if (abschluss) {
         await admin.from("diary_entries").update({ thread_closed: true }).eq("id", entry.id);
         await updateProfile(admin, member.couple_id, user.id, myProfile,
-          `Vertiefender Dialog zum Tagebucheintrag (Verlauf): ${verlauf.slice(0, 3000)}`);
+          `Vertiefender Dialog zum Tagebucheintrag (vollstaendiger Verlauf): ${verlauf}`);
       }
       return json({ ok: true, reply: sichtbar, closed: abschluss });
     }
@@ -270,26 +368,30 @@ Antworte nur mit deiner Nachricht.`);
       const { data: pastOwn } = await admin.from("conflicts")
         .select("title, content").eq("couple_id", member.couple_id)
         .eq("user_id", user.id).neq("id", k.id)
-        .order("created_at", { ascending: false }).limit(5);
+        .order("created_at", { ascending: false }).limit(80);
 
       const reflection = await claude(`${GRUNDREGELN}
 
-AUFGABE: Die Person hat einen Konflikt aus ihrer Sicht beschrieben. Antworte in drei kurzen Teilen (gesamt max. 200 Woerter):
+AUFGABE: Die Person hat einen Konflikt oder ein grundsaetzliches Thema aus ihrer Sicht beschrieben. Antworte in drei Teilen. Nimm dir den Raum, den das Thema braucht (300-700 Woerter):
 1. VERSTANDEN — was du aus ihrer Sicht hoerst (Beduerfnis hinter dem Aerger).
 2. OFFEN GESPROCHEN — pruefe wohlwollend, aber ehrlich: Was koennte in dieser Schilderung beschoenigt, ausgelassen oder einseitig sein? Benenne Diskrepanzen zu frueheren Schilderungen oder zum Selbstbild, falls vorhanden. Sei dabei fair: du kennst nur eine Seite.
 3. VERMITTLUNG — ein konkreter Reflexions- oder Gespraechsvorschlag. ${partnerProfile ? "Nutze dein verdichtetes Verstaendnis der anderen Person fuer einen Perspektivhinweis (Regel 3 strikt: nichts zitieren, nichts Konkretes offenbaren)." : ""}
 
-Verdichtetes Verstaendnis dieser Person:
+=== DEIN WISSEN UEBER DIESE PERSON (vollstaendig verfuegbar) ===
+Verdichtetes Profil:
 ${myProfile || "(noch leer)"}
-${partnerProfile ? `\nVerdichtetes Verstaendnis der anderen Person (streng vertraulich):\n${partnerProfile}` : ""}
+${myChronik ? `\nChronik:\n${myChronik}` : ""}
 
-Fruehere Konfliktschilderungen dieser Person (Auszug):
-${(pastOwn ?? []).map((c) => `- ${c.title ?? "ohne Titel"}: ${c.content.slice(0, 300)}`).join("\n") || "(keine)"}
+=== DEIN WISSEN UEBER DIE ANDERE PERSON (streng vertraulich, Regel 3) ===
+${partnerProfile || partnerChronik ? `${partnerProfile || "(leer)"}${partnerChronik ? `\n\nChronik:\n${partnerChronik}` : ""}` : "(noch nichts bekannt)"}
+
+Fruehere Konfliktschilderungen dieser Person:
+${(pastOwn ?? []).map((c) => `- ${c.title ?? "ohne Titel"}: ${c.content}`).join("\n\n") || "(keine)"}
 
 Neuer Konflikt${k.title ? ` ("${k.title}")` : ""}:
 """${k.content}"""
 
-Antworte nur mit den drei Teilen.`, 1100);
+Antworte nur mit den drei Teilen.`, 2500);
 
       await admin.from("conflicts").update({ ai_reflection: reflection }).eq("id", k.id);
       await updateProfile(admin, member.couple_id, user.id, myProfile, `Konfliktschilderung: ${k.content}`);
@@ -375,7 +477,7 @@ ${myProfile || "(leer)"}
 Verdichtetes Verstaendnis Person 2:
 ${partnerProfile || "(leer)"}
 
-Antworte NUR mit validem JSON ohne Backticks: {"open": true|false, "begruendung": "max. 60 Woerter, an beide gerichtet, motivierend und ehrlich — bei false: was noch fehlt, ohne Inhalte einer Seite zu offenbaren"}`);
+Antworte NUR mit validem JSON ohne Backticks: {"open": true|false, "begruendung": "100-200 Woerter, an beide gerichtet, motivierend und ehrlich — bei false: was noch fehlt, ohne Inhalte einer Seite zu offenbaren"}`);
 
       let open = false, begruendung = verdict;
       try {
@@ -394,7 +496,7 @@ Antworte NUR mit validem JSON ohne Backticks: {"open": true|false, "begruendung"
         if ((count ?? 0) === 0) {
           const opening = await claude(`${GRUNDREGELN}
 
-AUFGABE: Der gemeinsame Raum oeffnet sich zum ersten Mal. Schreibe eine Eroeffnungsnachricht an beide (max. 90 Woerter): Wuerdige, dass beide sich eingebracht haben, benenne EIN Thema, das offenbar beide beschaeftigt (nur wenn beide es unabhaengig beruehrt haben — Regel 1), und schlage vor, womit sie beginnen koennten. Nichts zitieren, nichts Einseitiges offenbaren.
+AUFGABE: Der gemeinsame Raum oeffnet sich zum ersten Mal. Schreibe eine Eroeffnungsnachricht an beide (150-250 Woerter): Wuerdige, dass beide sich eingebracht haben, benenne EIN Thema, das offenbar beide beschaeftigt (nur wenn beide es unabhaengig beruehrt haben — Regel 1), und schlage vor, womit sie beginnen koennten. Nichts zitieren, nichts Einseitiges offenbaren.
 
 Verstaendnis Person 1:
 ${myProfile}
@@ -409,7 +511,7 @@ ${partnerProfile}`);
       return json({ ok: true, gate_open: open, readiness: begruendung });
     }
 
-    // ─── Beziehungsbild: dreiteiliger Bericht (doppeltes Einverstaendnis) ─
+    // ─── Beziehungsbild: im Hintergrund erzeugen ────────────
     if (body.action === "report") {
       if (!partner) return json({ error: "Deine Partnerin oder dein Partner ist noch nicht beigetreten." }, 400);
       const { data: consents } = await admin.from("couple_members")
@@ -419,34 +521,28 @@ ${partnerProfile}`);
         return json({ error: "Das Beziehungsbild braucht die aktive Freigabe von euch beiden." }, 403);
       }
 
-      const material = async (uid: string) => {
-        const { data: d } = await admin.from("diary_entries").select("content, created_at")
-          .eq("couple_id", member.couple_id).eq("user_id", uid)
-          .order("created_at", { ascending: false }).limit(40);
-        const { data: k } = await admin.from("conflicts").select("title, content, created_at")
-          .eq("couple_id", member.couple_id).eq("user_id", uid)
-          .order("created_at", { ascending: false }).limit(20);
-        const { data: a } = await admin.from("assessments").select("answers")
-          .eq("couple_id", member.couple_id).eq("user_id", uid).maybeSingle();
-        const answers = a?.answers
-          ? Object.values(a.answers as Record<string, { frage: string; antwort: string }>)
-              .map((x) => `${x.frage} -> ${x.antwort}`).join("\n")
-          : "(kein Fragebogen)";
-        return `FRAGEBOGEN:\n${answers}\n\nTAGEBUCH (neueste zuerst):\n${(d ?? [])
-          .map((e) => `[${e.created_at.slice(0, 10)}] ${e.content}`).join("\n---\n") || "(leer)"}\n\nKONFLIKTSCHILDERUNGEN:\n${(k ?? [])
-          .map((e) => `[${e.created_at.slice(0, 10)}]${e.title ? ` ${e.title}:` : ""} ${e.content}`).join("\n---\n") || "(leer)"}`;
-      };
+      await haengendeLaeufeAufraeumen(admin, "reports", member.couple_id);
+
+      const { data: zeile } = await admin.from("reports")
+        .insert({ couple_id: member.couple_id, content: "", status: "running" })
+        .select("id").single();
+      const reportId = zeile?.id;
 
       const nameMe = member.display_name ?? "Person 1";
       const nameP = partner.display_name ?? "Person 2";
-      const matMe = await material(user.id);
-      const matP = await material(partner.user_id);
+      const coupleId = member.couple_id;
+      const uidMe = user.id, uidP = partner.user_id;
 
-      // Stufe 1: interne Tiefenanalyse (sieht nie jemand — Arbeitsnotizen)
-      const notizen = await claude(`${GRUNDREGELN}
+      imHintergrund((async () => {
+        const start = Date.now();
+        try {
+          const matMe = await materialFuer(admin, coupleId, uidMe);
+          const matP = await materialFuer(admin, coupleId, uidP);
+
+          const notizen = await claude(`${GRUNDREGELN}
 
 AUFGABE: Du bereitest ein "Beziehungsbild" vor. Erstelle zunaechst interne Analyse-Notizen (niemand ausser dir liest sie — sei praezise und schonungslos ehrlich, aber halte die Epistemik-Regeln ein). Arbeite systematisch heraus:
-1. KREUZVERGLEICH: Welche Situationen/Themen beschreiben beide — und wo weichen die Darstellungen voneinander ab? (Liste: Thema -> Sicht ${nameMe} -> Sicht ${nameP})
+1. KREUZVERGLEICH: Welche Situationen/Themen beschreiben beide — und wo weichen die Darstellungen voneinander ab? (Thema -> Sicht ${nameMe} -> Sicht ${nameP})
 2. GLEICHE GEFUEHLE, ANDERE WORTE: Wo empfinden beide dasselbe, benennen es aber unterschiedlich?
 3. BEDUERFNISSE: Welche Kernbeduerfnisse stehen bei jeder Person hinter dem beschriebenen Verhalten? Welche werden erfuellt, welche chronisch nicht?
 4. LANGJAEHRIGE MISSVERSTAENDNISSE: Wo interpretiert eine Person das Verhalten der anderen vermutlich seit Langem anders, als es gemeint ist?
@@ -460,10 +556,9 @@ ${matMe}
 MATERIAL ${nameP}:
 ${matP}
 
-Antworte nur mit den nummerierten Notizen.`, 1400, true);
+Antworte nur mit den nummerierten Notizen.`, 4000, true, restfrist(start));
 
-      // Stufe 2: der eigentliche Bericht auf Basis der Analyse
-      const report = await claude(`${GRUNDREGELN}
+          const report = await claude(`${GRUNDREGELN}
 
 AUFGABE: Beide Partner haben ausdruecklich eingewilligt, dass du ihr gesamtes Material fuer ein gemeinsames "Beziehungsbild" auswertest, das BEIDE lesen werden. Deine interne Tiefenanalyse liegt vor (unten). Schreibe daraus einen Bericht in genau drei Teilen, insgesamt 700-1200 Woerter. Geh in die Tiefe: konkret statt allgemein, benenne die Dynamiken aus deiner Analyse klar — Verstaendnis entsteht durch Praezision, nicht durch Weichzeichnen:
 
@@ -481,21 +576,21 @@ STRIKTE REGELN: Keine woertlichen Zitate aus dem Material. Keine Detailoffenbaru
 DEINE INTERNE TIEFENANALYSE:
 ${notizen}
 
-MATERIAL ${nameMe} (zum Nachschlagen):
-${matMe}
+Antworte nur mit dem Bericht (drei Teile mit Ueberschriften).`, 5000, true, restfrist(start));
 
-MATERIAL ${nameP} (zum Nachschlagen):
-${matP}
+          await admin.from("reports").update({ content: report, status: "done" }).eq("id", reportId);
+        } catch (e) {
+          console.error("Beziehungsbild fehlgeschlagen:", e);
+          await admin.from("reports").update({
+            status: "error", error_msg: e instanceof Error ? e.message : String(e),
+          }).eq("id", reportId);
+        }
+      })());
 
-Antworte nur mit dem Bericht (drei Teile mit Ueberschriften).`, 2600, true);
-
-      const { data: saved } = await admin.from("reports").insert({
-        couple_id: member.couple_id, content: report,
-      }).select("id, content, created_at").single();
-      return json({ ok: true, report: saved });
+      return json({ ok: true, id: reportId, status: "running" });
     }
 
-    // ─── Dein Spiegel: individuelles Feedback aus beiden Perspektiven ─
+    // ─── Dein Spiegel: im Hintergrund erzeugen ──────────────
     if (body.action === "mirror") {
       if (!partner) return json({ error: "Der Spiegel braucht euch beide — deine Partnerin oder dein Partner ist noch nicht beigetreten." }, 400);
       const { data: consents } = await admin.from("couple_members")
@@ -505,32 +600,25 @@ Antworte nur mit dem Bericht (drei Teile mit Ueberschriften).`, 2600, true);
         return json({ error: "Der Spiegel nutzt denselben Freigabe-Rahmen wie das Beziehungsbild: beide muessen ihr Material freigegeben haben." }, 403);
       }
 
-      const material = async (uid: string) => {
-        const { data: d } = await admin.from("diary_entries").select("content, created_at")
-          .eq("couple_id", member.couple_id).eq("user_id", uid)
-          .order("created_at", { ascending: false }).limit(40);
-        const { data: k } = await admin.from("conflicts").select("title, content, created_at")
-          .eq("couple_id", member.couple_id).eq("user_id", uid)
-          .order("created_at", { ascending: false }).limit(20);
-        const { data: a } = await admin.from("assessments").select("answers")
-          .eq("couple_id", member.couple_id).eq("user_id", uid).maybeSingle();
-        const answers = a?.answers
-          ? Object.values(a.answers as Record<string, { frage: string; antwort: string }>)
-              .map((x) => `${x.frage} -> ${x.antwort}`).join("\n")
-          : "(kein Fragebogen)";
-        return `FRAGEBOGEN:\n${answers}\n\nTAGEBUCH (neueste zuerst):\n${(d ?? [])
-          .map((e) => `[${e.created_at.slice(0, 10)}] ${e.content}`).join("\n---\n") || "(leer)"}\n\nKONFLIKTSCHILDERUNGEN:\n${(k ?? [])
-          .map((e) => `[${e.created_at.slice(0, 10)}]${e.title ? ` ${e.title}:` : ""} ${e.content}`).join("\n---\n") || "(leer)"}`;
-      };
+      await haengendeLaeufeAufraeumen(admin, "mirrors", member.couple_id);
 
+      const { data: zeile } = await admin.from("mirrors")
+        .insert({ couple_id: member.couple_id, user_id: user.id, content: "", status: "running" })
+        .select("id").single();
+      const mirrorId = zeile?.id;
       const nameMe = member.display_name ?? "du";
-      const matMe = await material(user.id);
-      const matP = await material(partner.user_id);
+      const coupleId = member.couple_id;
+      const uidMe = user.id, uidP = partner.user_id;
 
-      // Stufe 1: interne Analyse — Blickrichtung ausschliesslich auf die anfragende Person
-      const notizen = await claude(`${GRUNDREGELN}
+      imHintergrund((async () => {
+        const start = Date.now();
+        try {
+          const matMe = await materialFuer(admin, coupleId, uidMe);
+          const matP = await materialFuer(admin, coupleId, uidP);
 
-AUFGABE: Du bereitest einen "Spiegel" fuer ${nameMe} vor: individuelles Feedback, das NUR ${nameMe} lesen wird. Du kennst das Material beider Seiten — aber die Blickrichtung deiner Analyse zeigt AUSSCHLIESSLICH auf ${nameMe}. Das Material der anderen Person dient dir nur als Linse, um ${nameMe} besser zu verstehen. Erstelle interne Notizen zu:
+          const notizen = await claude(`${GRUNDREGELN}
+
+AUFGABE: Du bereitest einen "Spiegel" fuer ${nameMe} vor: individuelles Feedback, das NUR ${nameMe} lesen wird. Du kennst das Material beider Seiten — aber die Blickrichtung deiner Analyse zeigt AUSSCHLIESSLICH auf ${nameMe}. Das Material der anderen Person dient dir nur als Linse. Erstelle interne Notizen zu:
 1. SELBSTBILD vs. WIRKUNG: Wo koennte das Verhalten von ${nameMe} anders ankommen, als es gemeint ist?
 2. EIGENER ANTEIL: Welchen wiederkehrenden Beitrag leistet ${nameMe} zur gemeinsamen Dynamik — auch unbeabsichtigt?
 3. BLINDE FLECKEN: Was uebersieht oder vermeidet ${nameMe} moeglicherweise (auch sich selbst gegenueber)?
@@ -538,7 +626,7 @@ AUFGABE: Du bereitest einen "Spiegel" fuer ${nameMe} vor: individuelles Feedback
 5. STAERKEN: Was gelingt ${nameMe} in der Beziehung gut und traegt?
 6. WACHSTUMSKANTEN: Die 1-2 konkreten Punkte mit dem groessten Hebel fuer ${nameMe} selbst.
 
-ABSOLUTE SPERRREGEL: Jede Erkenntnis, die sich NUR durch eine private Aussage der anderen Person belegen laesst (deren Gefuehle, Zweifel, Plaene, Bewertungen, Geheimnisse), ist GESPERRT und darf weder direkt noch indirekt, angedeutet oder umformuliert verwendet werden. Verwende von der anderen Seite nur, was ${nameMe} aus dem gemeinsamen Leben ohnehin wissen kann (beobachtbares Verhalten, offen Gesagtes, von beiden Berichtetes).
+ABSOLUTE SPERRREGEL: Jede Erkenntnis, die sich NUR durch eine private Aussage der anderen Person belegen laesst (deren Gefuehle, Zweifel, Plaene, Bewertungen, Geheimnisse), ist GESPERRT und darf weder direkt noch indirekt, angedeutet oder umformuliert verwendet werden. Verwende von der anderen Seite nur, was ${nameMe} aus dem gemeinsamen Leben ohnehin wissen kann.
 
 MATERIAL ${nameMe}:
 ${matMe}
@@ -546,29 +634,34 @@ ${matMe}
 MATERIAL DER ANDEREN PERSON (nur als Linse, Sperrregel beachten):
 ${matP}
 
-Antworte nur mit den nummerierten Notizen.`, 1400, true);
+Antworte nur mit den nummerierten Notizen.`, 4000, true, restfrist(start));
 
-      // Stufe 2: der Spiegel selbst
-      const mirrorText = await claude(`${GRUNDREGELN}
+          const mirrorText = await claude(`${GRUNDREGELN}
 
-AUFGABE: Schreibe aus deinen internen Notizen (unten) den "Spiegel" fuer ${nameMe} — einen persoenlichen Text (400-700 Woerter), den nur ${nameMe} liest. Sprich ${nameMe} direkt an. Aufbau frei, aber enthalte: was ${nameMe} gut gelingt und traegt; wie das eigene Verhalten vermutlich ankommt (Selbstbild vs. Wirkung); den eigenen Anteil an der Dynamik; blinde Flecken — wohlwollend, aber ohne Weichzeichnen; und am Ende 1-2 konkrete Wachstumskanten mit einem umsetzbaren ersten Schritt. Keine Aussagen darueber, was die andere Person fuehlt, denkt, plant oder privat geschrieben hat — die SPERRREGEL aus den Notizen gilt unveraendert. Kein Urteil ueber die Beziehung, keine Empfehlung zu bleiben oder zu gehen.
+AUFGABE: Schreibe aus deinen internen Notizen (unten) den "Spiegel" fuer ${nameMe} — einen persoenlichen Text (400-700 Woerter), den nur ${nameMe} liest. Sprich ${nameMe} direkt an. Enthalte: was gut gelingt und traegt; wie das eigene Verhalten vermutlich ankommt; den eigenen Anteil an der Dynamik; blinde Flecken — wohlwollend, aber ohne Weichzeichnen; und am Ende 1-2 konkrete Wachstumskanten mit einem umsetzbaren ersten Schritt. Keine Aussagen darueber, was die andere Person fuehlt, denkt, plant oder privat geschrieben hat — die SPERRREGEL gilt unveraendert. Kein Urteil ueber die Beziehung.
 
 DEINE INTERNEN NOTIZEN:
 ${notizen}
 
-Antworte nur mit dem Spiegel-Text.`, 1600, true);
+Antworte nur mit dem Spiegel-Text.`, 4000, true, restfrist(start));
 
-      const { data: saved } = await admin.from("mirrors").insert({
-        couple_id: member.couple_id, user_id: user.id, content: mirrorText,
-      }).select("id, content, created_at").single();
-      return json({ ok: true, mirror: saved });
+          await admin.from("mirrors").update({ content: mirrorText, status: "done" }).eq("id", mirrorId);
+        } catch (e) {
+          console.error("Spiegel fehlgeschlagen:", e);
+          await admin.from("mirrors").update({
+            status: "error", error_msg: e instanceof Error ? e.message : String(e),
+          }).eq("id", mirrorId);
+        }
+      })());
+
+      return json({ ok: true, id: mirrorId, status: "running" });
     }
 
     // ─── Zwischenraum fragt: gezielte Fragen fuer ein ganzheitliches Bild ─
     if (body.action === "probe") {
       const { data: recent } = await admin.from("diary_entries").select("content")
         .eq("couple_id", member.couple_id).eq("user_id", user.id)
-        .order("created_at", { ascending: false }).limit(5);
+        .order("created_at", { ascending: false }).limit(20);
       const { data: past } = await admin.from("probes").select("q")
         .eq("couple_id", member.couple_id).eq("user_id", user.id)
         .order("created_at", { ascending: false }).limit(10);
@@ -584,12 +677,16 @@ ${(past ?? []).map((x) => `- ${x.q}`).join("\n") || "(keine)"}
 
 Verdichtetes Verstaendnis dieser Person:
 ${myProfile || "(noch leer)"}
+${myChronik ? `\nChronik dieser Person:\n${myChronik}` : ""}
+${partnerChronik ? `\nChronik der anderen Person (streng vertraulich, Sperrregel beachten):\n${partnerChronik}` : ""}
 
 Juengste Tagebucheintraege dieser Person:
-${(recent ?? []).map((e) => e.content.slice(0, 400)).join("\n---\n") || "(keine)"}
+${(recent ?? []).map((e) => e.content).join("\n---\n") || "(keine)"}
 ${partnerProfile ? `\nVerdichtetes Verstaendnis der anderen Person (streng vertraulich, Sperrregel beachten):\n${partnerProfile}` : ""}
 
-Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","..."]}`, 700);
+Stelle lieber eine gute Frage als drei mittelmaessige. Wenn dir gerade nichts wirklich Weiterfuehrendes einfaellt, gib eine leere Liste zurueck — das ist besser als eine Pflichtfrage.
+
+Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","..."]}`, 900);
 
       let fragen: string[] = [];
       try { fragen = JSON.parse(raw.replace(/```json|```/g, "").trim()).fragen.slice(0, 3); } catch { fragen = []; }
@@ -694,6 +791,7 @@ Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","..."]}`, 700);
       await admin.from("probes").delete().eq("user_id", user.id);
       await admin.from("mirrors").delete().eq("user_id", user.id);
       await admin.from("ai_profiles").delete().eq("user_id", user.id);
+      await admin.from("chronicle").delete().eq("user_id", user.id);
       await admin.from("chat_messages").delete().eq("sender_id", user.id);
       await admin.from("email_events").delete().eq("recipient_id", user.id);
       // Gemeinsame Berichte enthalten Material beider Seiten
@@ -721,7 +819,7 @@ Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","..."]}`, 700);
     if (body.action === "chat") {
       const { data: msgs } = await admin.from("chat_messages")
         .select("sender_id, content").eq("couple_id", member.couple_id)
-        .order("created_at", { ascending: false }).limit(30);
+        .order("created_at", { ascending: false }).limit(80);
       const transcript = (msgs ?? []).reverse().map((m) =>
         m.sender_id === null ? `Zwischenraum: ${m.content}` :
         m.sender_id === user.id ? `${member.display_name ?? "Person 1"}: ${m.content}` :
@@ -729,7 +827,7 @@ Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","..."]}`, 700);
 
       const mod = await claude(`${GRUNDREGELN}
 
-AUFGABE: Du moderierst den gemeinsamen Chat des Paares. Greife jetzt ein (max. 100 Woerter): Fasse zusammen, was du bei beiden hoerst (uebersetzt in Beduerfnisse, allparteilich), entschaerfe wenn noetig, und stelle genau eine weiterfuehrende Frage an einen oder beide. Nutze dein Hintergrundverstaendnis beider (Regel 3 strikt).
+AUFGABE: Du moderierst den gemeinsamen Chat des Paares. Greife jetzt ein (so ausfuehrlich, wie es der Moment braucht — meist 100-250 Woerter): Fasse zusammen, was du bei beiden hoerst (uebersetzt in Beduerfnisse, allparteilich), entschaerfe wenn noetig. Stelle eine weiterfuehrende Frage nur, wenn sie das Gespraech oeffnet — wenn eine Einordnung oder Wuerdigung dran ist, lass die Frage weg. Nutze dein Hintergrundverstaendnis beider (Regel 3 strikt).
 
 Verstaendnis Person 1 (${member.display_name ?? "?"}):
 ${myProfile}
@@ -740,7 +838,7 @@ ${partnerProfile}
 Bisheriger Verlauf:
 ${transcript || "(noch leer)"}
 
-Antworte nur mit deiner Moderationsnachricht.`);
+Antworte nur mit deiner Moderationsnachricht.`, 2000);
 
       await admin.from("chat_messages").insert({
         couple_id: member.couple_id, sender_id: null, content: mod,
@@ -756,6 +854,55 @@ Antworte nur mit deiner Moderationsnachricht.`);
   }
 });
 
+// Chronik: dauerhaft wachsendes, abstrahiertes Langzeitgedaechtnis.
+// Material einer Person fuer die Tiefenanalysen.
+async function materialFuer(
+  admin: ReturnType<typeof createClient>, coupleId: string, uid: string,
+): Promise<string> {
+  const { data: d } = await admin.from("diary_entries").select("content, created_at")
+    .eq("couple_id", coupleId).eq("user_id", uid)
+    .order("created_at", { ascending: false }).limit(80);
+  const { data: k } = await admin.from("conflicts").select("title, content, created_at")
+    .eq("couple_id", coupleId).eq("user_id", uid)
+    .order("created_at", { ascending: false }).limit(40);
+  const { data: a } = await admin.from("assessments").select("answers")
+    .eq("couple_id", coupleId).eq("user_id", uid).maybeSingle();
+  const answers = a?.answers
+    ? Object.values(a.answers as Record<string, { frage: string; antwort: string }>)
+        .map((x) => `${x.frage} -> ${x.antwort}`).join("\n")
+    : "(kein Fragebogen)";
+  const chronik = await getChronik(admin, uid);
+  return `FRAGEBOGEN:\n${answers}\n\n${chronik ? `CHRONIK:\n${chronik}\n\n` : ""}TAGEBUCH (neueste zuerst):\n${(d ?? [])
+    .map((e) => `[${e.created_at.slice(0, 10)}] ${e.content}`).join("\n---\n") || "(leer)"}\n\nTHEMEN UND KONFLIKTE:\n${(k ?? [])
+    .map((e) => `[${e.created_at.slice(0, 10)}]${e.title ? ` ${e.title}:` : ""} ${e.content}`).join("\n---\n") || "(leer)"}`;
+}
+
+async function getChronik(
+  admin: ReturnType<typeof createClient>, userId: string, limit = 120,
+): Promise<string> {
+  const { data } = await admin.from("chronicle").select("observation, created_at")
+    .eq("user_id", userId).order("created_at", { ascending: true }).limit(limit);
+  return (data ?? []).map((c) => `[${c.created_at.slice(0, 10)}] ${c.observation}`).join("\n") || "";
+}
+
+// Eigenes Material im VOLLTEXT - hier gibt es keine Vertraulichkeitsgrenze.
+async function eigenesMaterial(
+  admin: ReturnType<typeof createClient>, coupleId: string, userId: string,
+): Promise<string> {
+  const { data: d } = await admin.from("diary_entries").select("content, created_at")
+    .eq("couple_id", coupleId).eq("user_id", userId)
+    .order("created_at", { ascending: false }).limit(30);
+  const { data: k } = await admin.from("conflicts").select("title, content, created_at")
+    .eq("couple_id", coupleId).eq("user_id", userId)
+    .order("created_at", { ascending: false }).limit(20);
+  const teile: string[] = [];
+  if ((d ?? []).length) teile.push("FRUEHERE TAGEBUCHEINTRAEGE (neueste zuerst):\n" +
+    (d ?? []).map((e) => `[${e.created_at.slice(0, 10)}] ${e.content}`).join("\n---\n"));
+  if ((k ?? []).length) teile.push("FRUEHERE THEMEN UND KONFLIKTE:\n" +
+    (k ?? []).map((e) => `[${e.created_at.slice(0, 10)}]${e.title ? ` ${e.title}:` : ""} ${e.content}`).join("\n---\n"));
+  return teile.join("\n\n") || "(noch keine frueheren Eintraege)";
+}
+
 async function getProfile(admin: ReturnType<typeof createClient>, coupleId: string, userId: string): Promise<string> {
   const { data } = await admin.from("ai_profiles").select("profile")
     .eq("couple_id", coupleId).eq("user_id", userId).maybeSingle();
@@ -768,8 +915,10 @@ async function updateProfile(
   coupleId: string, userId: string, current: string, newInfo: string,
 ) {
   const updated = await claude(`Du pflegst ein verdichtetes, abstrahiertes Verstaendnisprofil einer Person fuer eine Paar-Begleitung. Regeln:
-- Max. 300 Woerter. Themen, Beduerfnisse, Muster, Werte, relevante Praegungen (z.B. Herkunftsfamilie) — als Beobachtungen mit epistemischer Markierung ("berichtet, dass...", "beschreibt sich als...").
-- KEINE woertlichen Zitate, keine Namen Dritter, keine identifizierenden Details, keine Diagnosen.
+- Sei AUSFUEHRLICH und konkret (800-2000 Woerter, laenger wenn das Material es hergibt). Dieses Profil ist die einzige Bruecke zwischen den beiden Menschen — je reicher es ist, desto besser kann die Begleitung beiden helfen.
+- Erfasse: Kernthemen und ihre Entwicklung ueber die Zeit; Beduerfnisse (erfuellte und chronisch unerfuellte); Konfliktverhalten und Eskalationsmuster; Werte und Prioritaeten; Praegungen aus Herkunft und frueheren Beziehungen; Staerken und Ressourcen; wunde Punkte und Trigger; Widersprueche zwischen Selbstbild und geschildertem Verhalten; offene Fragen, die diese Person gerade beschaeftigen; Sprache und Tonfall, in der sie ueber die Beziehung spricht.
+- Alles mit epistemischer Markierung ("berichtet, dass...", "beschreibt sich als...", "wiederholt sich in mehreren Eintraegen: ..."). Markiere, was einmalig erwaehnt wurde, und was ein stabiles Muster ist.
+- KEINE woertlichen Zitate und keine erzaehlten Einzelereignisse, die eine Person wiedererkennen wuerde ("der Streit am Samstag ueber X"). Beschreibe stattdessen die dahinterliegende Dynamik ("erlebt gemeinsame Planung wiederholt als Ueberrumpelung"). Keine Namen Dritter, keine Diagnosen.
 - Neues integrieren, Ueberholtes ersetzen, Wiederholtes als Muster markieren.
 
 Bisheriges Profil:
@@ -778,11 +927,36 @@ ${current || "(leer)"}
 Neue Information:
 """${newInfo}"""
 
-Antworte nur mit dem aktualisierten Profil.`, 700);
+Antworte nur mit dem aktualisierten Profil.`, 4000);
 
   await admin.from("ai_profiles").upsert({
     couple_id: coupleId, user_id: userId, profile: updated, updated_at: new Date().toISOString(),
   });
+
+  // Chronik ergaenzen: dauerhafte Beobachtungen, die NIE ueberschrieben werden.
+  try {
+    const raw = await claude(`Du fuehrst eine Chronik fuer eine Paar-Begleitung: kurze, dauerhafte Beobachtungen, die auch in Monaten noch verstaendlich und nuetzlich sind.
+
+Formuliere aus der neuen Information 1-3 Beobachtungen (je 1-2 Saetze). Regeln:
+- Abstrahiert: keine woertlichen Zitate, keine erzaehlten Einzelereignisse, keine Namen Dritter, keine intimen Details. Beschreibe Muster, Beduerfnisse, Wendepunkte, Stimmungen, Entwicklungen.
+- Epistemisch markiert ("berichtet...", "beschreibt sich als...").
+- Nur festhalten, was langfristig Bedeutung haben koennte. Belangloses weglassen - dann gib eine leere Liste zurueck.
+
+Neue Information:
+"""${newInfo}"""
+
+Antworte NUR mit validem JSON ohne Backticks: {"beobachtungen":["...","..."]}`, 1200);
+    const arr = JSON.parse(raw.replace(/```json|```/g, "").trim()).beobachtungen ?? [];
+    if (Array.isArray(arr) && arr.length) {
+      await admin.from("chronicle").insert(
+        arr.slice(0, 3).map((o: string) => ({
+          couple_id: coupleId, user_id: userId, observation: String(o).slice(0, 1000),
+        })),
+      );
+    }
+  } catch (e) {
+    console.error("Chronik-Eintrag fehlgeschlagen:", e);
+  }
 }
 
 function betreff(kind: string): string {
