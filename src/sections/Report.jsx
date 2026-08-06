@@ -13,6 +13,14 @@ export default function Report({ membership }) {
   const [error, setError] = useState(null);
   const [letzterFehler, setLetzterFehler] = useState(null);
 
+  const laufend = reports.some((r) => r.status === "running") || mirrors.some((m) => m.status === "running");
+
+  useEffect(() => {
+    if (!laufend) return;
+    const t = setInterval(load, 5000);
+    return () => clearInterval(t);
+  }, [laufend]);
+
   async function load() {
     const { data: members } = await supabase.from("couple_members")
       .select("user_id, report_consent").eq("couple_id", membership.couple_id);
@@ -21,10 +29,10 @@ export default function Report({ membership }) {
       else { setPartnerJoined(true); setPartnerConsent(!!m.report_consent); }
     }
     const { data: r } = await supabase.from("reports")
-      .select("id, content, created_at").order("created_at", { ascending: false });
+      .select("id, content, status, error_msg, created_at").order("created_at", { ascending: false });
     setReports(r || []);
     const { data: m } = await supabase.from("mirrors")
-      .select("id, content, created_at").order("created_at", { ascending: false });
+      .select("id, content, status, error_msg, created_at").order("created_at", { ascending: false });
     setMirrors(m || []);
   }
   useEffect(() => { load(); }, []);
@@ -44,6 +52,8 @@ export default function Report({ membership }) {
     try {
       await callAI({ action: "mirror" });
       await load();
+      setMirrorBusy(false);
+      return;
     } catch (e) {
       setError("Der Spiegel konnte nicht erstellt werden: " + (e?.message || JSON.stringify(e)));
       setLetzterFehler("mirror");
@@ -57,6 +67,8 @@ export default function Report({ membership }) {
       await callAI({ action: "report" });
       try { await callAI({ action: "notify", kind: "report" }); } catch { /* optional */ }
       await load();
+      setBusy(false);
+      return;
     } catch (e) {
       setError("Der Bericht konnte nicht erstellt werden: " + (e?.message || JSON.stringify(e)));
       setLetzterFehler("report");
@@ -106,9 +118,9 @@ export default function Report({ membership }) {
           <div style={{ textAlign: "center", marginTop: 16 }}>
             <Convergence />
             <Btn onClick={generate} disabled={busy}>
-              {busy ? "Zwischenraum schreibt euer Beziehungsbild …" : reports.length ? "Neues Beziehungsbild erstellen" : "Beziehungsbild erstellen"}
+              {busy ? "Wird gestartet …" : reports.length ? "Neues Beziehungsbild erstellen" : "Beziehungsbild erstellen"}
             </Btn>
-            {busy && <p style={{ ...st.hint, marginTop: 10 }}>Das dauert einen Moment — es ist der tiefste Blick, den Zwischenraum wirft.</p>}
+            <p style={{ ...st.hint, marginTop: 10 }}>Die Analyse läuft im Hintergrund — du kannst die Seite verlassen und später zurückkommen.</p>
           </div>
         )}
       </section>
@@ -125,7 +137,7 @@ export default function Report({ membership }) {
         {both ? (
           <div style={{ textAlign: "center" }}>
             <Btn onClick={generateMirror} disabled={mirrorBusy}>
-              {mirrorBusy ? "Zwischenraum schaut genau hin …" : mirrors.length ? "Neuen Spiegel erstellen" : "Deinen Spiegel erstellen"}
+              {mirrorBusy ? "Wird gestartet …" : mirrors.length ? "Neuen Spiegel erstellen" : "Deinen Spiegel erstellen"}
             </Btn>
           </div>
         ) : (
@@ -136,7 +148,15 @@ export default function Report({ membership }) {
             <span style={{ fontSize: 12, color: C.inkSoft }}>
               {new Date(m.created_at).toLocaleString("de-DE", { dateStyle: "long", timeStyle: "short" })}
             </span>
-            <p style={{ ...st.body, whiteSpace: "pre-wrap", marginTop: 6 }}>{m.content}</p>
+            {m.status === "running" ? (
+              <p style={{ ...st.body, marginTop: 6 }}>Zwischenraum schaut genau hin … Das dauert ein bis zwei Minuten.</p>
+            ) : m.status === "error" ? (
+              <p style={{ ...st.body, marginTop: 6, color: C.danger }}>
+                Fehlgeschlagen{m.error_msg ? `: ${m.error_msg}` : "."} Versuch es oben noch einmal.
+              </p>
+            ) : (
+              <p style={{ ...st.body, whiteSpace: "pre-wrap", marginTop: 6 }}>{m.content}</p>
+            )}
           </div>
         ))}
       </section>
@@ -146,7 +166,18 @@ export default function Report({ membership }) {
           <span style={{ fontSize: 12, color: C.inkSoft }}>
             {new Date(r.created_at).toLocaleString("de-DE", { dateStyle: "long", timeStyle: "short" })}
           </span>
-          <p style={{ ...st.body, whiteSpace: "pre-wrap", marginTop: 8 }}>{r.content}</p>
+          {r.status === "running" ? (
+            <p style={{ ...st.body, marginTop: 8 }}>
+              Zwischenraum schreibt euer Beziehungsbild … Das dauert ein bis zwei Minuten.
+              Du kannst die Seite ruhig verlassen — der Bericht erscheint hier, sobald er fertig ist.
+            </p>
+          ) : r.status === "error" ? (
+            <p style={{ ...st.body, marginTop: 8, color: C.danger }}>
+              Die Erstellung ist fehlgeschlagen{r.error_msg ? `: ${r.error_msg}` : "."} Versuch es oben noch einmal.
+            </p>
+          ) : (
+            <p style={{ ...st.body, whiteSpace: "pre-wrap", marginTop: 8 }}>{r.content}</p>
+          )}
         </section>
       ))}
     </div>
