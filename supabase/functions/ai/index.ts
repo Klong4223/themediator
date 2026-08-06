@@ -33,26 +33,17 @@ const GRUNDREGELN = `Du bist "Zwischenraum", eine neutrale, allparteiliche Begle
 5. SICHERHEIT: Bei Hinweisen auf koerperliche Gewalt, Missbrauch, Selbst- oder Fremdgefaehrdung verlaesst du die Neutralitaet, benennst das klar und fuersorglich und verweist auf professionelle Hilfe (in DE: Hilfetelefon Gewalt gegen Frauen 116 016, Telefonseelsorge 0800 111 0 111, Notruf 112).
 6. SPRACHE: Antworte in der Sprache der Person (Deutsch oder Englisch), sprich sie mit "du" an. Kompakt und konkret, kein Therapeuten-Jargon.`;
 
-// Zeitbudget. Die Supabase-Laufzeit raeumt Hintergrund-Tasks nach rund 400
-// Sekunden hart ab — dann laeuft kein catch mehr, und eine angefangene Zeile
-// bliebe fuer immer auf "running" stehen (genau so sind am 06.08.2026 zwei
-// Beziehungsbilder stillschweigend verschwunden). Deshalb bricht jeder Aufruf
-// vorher selbst ab, damit der Fehler sichtbar in der Datenbank landet.
-const AUFRUF_FRIST_MS = 150_000;   // pro Modellaufruf
-const LAUF_FRIST_MS = 330_000;     // fuer einen kompletten Hintergrund-Lauf
-
-// Wieviel Zeit bleibt dem naechsten Aufruf? Wirft, wenn es sich nicht mehr
-// lohnt anzufangen — ein sauberer Fehler ist besser als ein harter Abbruch.
-function restfrist(start: number): number {
-  const rest = LAUF_FRIST_MS - (Date.now() - start);
-  if (rest < 20_000) {
-    throw new Error(
-      "Das Zeitbudget fuer diesen Lauf ist aufgebraucht, bevor der zweite Schritt beginnen konnte. " +
-      "Versuch es bitte noch einmal — meist klappt der naechste Anlauf.",
-    );
-  }
-  return Math.min(AUFRUF_FRIST_MS, rest);
-}
+// Zeitbudget fuer die kurzen, synchronen Modellaufrufe (probe/gate/chat/...).
+// Beziehungsbild und Spiegel laufen NICHT mehr darueber — siehe
+// starteHintergrundantwort/holeHintergrundantwort weiter unten: die
+// Supabase-Laufzeit raeumt Hintergrund-Tasks nach rund 400 Sekunden hart ab,
+// und am 06.08.2026 hat sich gezeigt, dass selbst ein eigenes AbortController-
+// Limit das nicht zuverlaessig auffaengt (der Prozess wird mitten im Lauf
+// abgeraeumt, ohne dass der catch-Zweig je zum Zug kommt). Fuer alles, was
+// laenger als ein, zwei Modell-Antworten dauern kann, entkoppelt die
+// Responses-API mit background:true die Denkzeit des Modells vollstaendig
+// von der Lebensdauer der Edge Function.
+const AUFRUF_FRIST_MS = 150_000;
 
 async function claude(
   prompt: string, maxTokens = 2500, strong = false, fristMs = AUFRUF_FRIST_MS,
@@ -138,18 +129,69 @@ async function modellAufruf(
     .trim();
 }
 
-const VERSION = "2026-08-06c";
-
-// Supabase-Laufzeit: Arbeit nach dem Senden der Antwort weiterlaufen lassen.
-declare const EdgeRuntime: { waitUntil(p: Promise<unknown>): void } | undefined;
-function imHintergrund(p: Promise<unknown>) {
-  if (typeof EdgeRuntime !== "undefined" && EdgeRuntime?.waitUntil) EdgeRuntime.waitUntil(p);
-  else void p;
+// ─── Hintergrund-Antworten fuer Beziehungsbild und Spiegel ──
+// Statt auf eine Chat-Completion zu warten (die bei tiefer Analyse mehrere
+// Minuten dauern kann und dabei von der Supabase-Laufzeit abgeraeumt werden
+// kann), wird der Auftrag nur GESTARTET. Die Antwort holt eine spaetere,
+// kurze Anfrage per Polling ab — jeder einzelne Funktionsaufruf dauert dann
+// nur Sekunden, egal wie lange das Modell tatsaechlich denkt.
+async function starteHintergrundantwort(prompt: string, maxTokens: number, strong: boolean): Promise<string> {
+  if (!Deno.env.get("OPENAI_API_KEY")) {
+    throw new Error("Secret OPENAI_API_KEY ist nicht gesetzt (Supabase > Edge Functions > Secrets).");
+  }
+  const res = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    signal: AbortSignal.timeout(20_000),
+    headers: {
+      "content-type": "application/json",
+      "authorization": `Bearer ${Deno.env.get("OPENAI_API_KEY") ?? ""}`,
+    },
+    body: JSON.stringify({
+      model: strong ? OPENAI_MODEL_STRONG : OPENAI_MODEL,
+      input: prompt,
+      background: true,
+      max_output_tokens: Math.max(maxTokens * 5, 16000),
+    }),
+  });
+  if (!res.ok) throw new Error(`OpenAI (Start) ${res.status}: ${await res.text()}`);
+  const data = await res.json();
+  if (!data.id) throw new Error("OpenAI hat beim Start keine Antwort-ID zurueckgegeben.");
+  return data.id as string;
 }
 
-// Wird ein Lauf von der Laufzeitumgebung abgeraeumt, kommt der catch-Zweig
-// nicht mehr zum Zug und die Zeile bleibt fuer immer auf "running" — die
-// Oberflaeche wartet dann endlos. Solche Leichen raeumen wir beim naechsten
+type Hintergrundstatus =
+  | { fertig: false }
+  | { fertig: true; text: string }
+  | { fertig: true; fehler: string };
+
+// Fragt den Stand eines gestarteten Auftrags ab. incomplete_details/error aus
+// der OpenAI-Antwort landen direkt im Fehlertext — so wird sichtbar, WARUM
+// ein Lauf scheitert (z.B. Token-Budget), statt dass er stillschweigend
+// verschwindet. Das beantwortet nebenbei die Frage, ob je eine inhaltliche
+// Ablehnung (Moderation/Policy) vorliegt, statt eines Infrastruktur-Problems:
+// eine Ablehnung kaeme hier als expliziter, sofortiger Status zurueck.
+async function holeHintergrundantwort(responseId: string): Promise<Hintergrundstatus> {
+  const res = await fetch(`https://api.openai.com/v1/responses/${responseId}`, {
+    signal: AbortSignal.timeout(20_000),
+    headers: { "authorization": `Bearer ${Deno.env.get("OPENAI_API_KEY") ?? ""}` },
+  });
+  if (!res.ok) throw new Error(`OpenAI (Abfrage) ${res.status}: ${await res.text()}`);
+  const data = await res.json();
+  if (data.status === "queued" || data.status === "in_progress") return { fertig: false };
+  if (data.status === "completed") {
+    const text = String(data.output_text ?? "").trim();
+    if (!text) return { fertig: true, fehler: "Leere Antwort trotz Status 'completed'." };
+    return { fertig: true, text };
+  }
+  const grund = data.incomplete_details?.reason ?? data.error?.message ?? "unbekannt";
+  return { fertig: true, fehler: `OpenAI-Lauf beendet mit Status '${data.status}' (${grund}).` };
+}
+
+const VERSION = "2026-08-06d";
+
+// Falls ein Lauf nie zu Ende gepollt wird (z.B. beide Browser-Tabs
+// geschlossen, bevor der letzte Poll-Tick kam), bleibt die Zeile sonst fuer
+// immer auf "running" stehen. Solche Leichen raeumen wir beim naechsten
 // Anlauf weg, damit niemand vor einem ewigen Ladehinweis sitzt.
 async function haengendeLaeufeAufraeumen(
   admin: ReturnType<typeof createClient>,
@@ -511,7 +553,7 @@ ${partnerProfile}`);
       return json({ ok: true, gate_open: open, readiness: begruendung });
     }
 
-    // ─── Beziehungsbild: im Hintergrund erzeugen ────────────
+    // ─── Beziehungsbild: Stufe 1 anstossen, Rest per Polling ─
     if (body.action === "report") {
       if (!partner) return json({ error: "Deine Partnerin oder dein Partner ist noch nicht beigetreten." }, 400);
       const { data: consents } = await admin.from("couple_members")
@@ -523,23 +565,12 @@ ${partnerProfile}`);
 
       await haengendeLaeufeAufraeumen(admin, "reports", member.couple_id);
 
-      const { data: zeile } = await admin.from("reports")
-        .insert({ couple_id: member.couple_id, content: "", status: "running" })
-        .select("id").single();
-      const reportId = zeile?.id;
-
       const nameMe = member.display_name ?? "Person 1";
       const nameP = partner.display_name ?? "Person 2";
-      const coupleId = member.couple_id;
-      const uidMe = user.id, uidP = partner.user_id;
+      const matMe = await materialFuer(admin, member.couple_id, user.id);
+      const matP = await materialFuer(admin, member.couple_id, partner.user_id);
 
-      imHintergrund((async () => {
-        const start = Date.now();
-        try {
-          const matMe = await materialFuer(admin, coupleId, uidMe);
-          const matP = await materialFuer(admin, coupleId, uidP);
-
-          const notizen = await claude(`${GRUNDREGELN}
+      const notizenPrompt = `${GRUNDREGELN}
 
 AUFGABE: Du bereitest ein "Beziehungsbild" vor. Erstelle zunaechst interne Analyse-Notizen (niemand ausser dir liest sie — sei praezise und schonungslos ehrlich, aber halte die Epistemik-Regeln ein). Arbeite systematisch heraus:
 1. KREUZVERGLEICH: Welche Situationen/Themen beschreiben beide — und wo weichen die Darstellungen voneinander ab? (Thema -> Sicht ${nameMe} -> Sicht ${nameP})
@@ -556,9 +587,46 @@ ${matMe}
 MATERIAL ${nameP}:
 ${matP}
 
-Antworte nur mit den nummerierten Notizen.`, 4000, true, restfrist(start));
+Antworte nur mit den nummerierten Notizen.`;
 
-          const report = await claude(`${GRUNDREGELN}
+      const responseId = await starteHintergrundantwort(notizenPrompt, 4000, true);
+
+      const { data: zeile } = await admin.from("reports").insert({
+        couple_id: member.couple_id, content: null, status: "running",
+        stage: "notizen", openai_response_id: responseId, requested_by: user.id,
+      }).select("id").single();
+
+      return json({ ok: true, id: zeile?.id, status: "running" });
+    }
+
+    // ─── Beziehungsbild: Fortschritt abholen, ggf. Stufe 2 anstossen ─
+    if (body.action === "report_poll") {
+      const { data: zeile } = await admin.from("reports").select("*")
+        .eq("id", body.id).eq("couple_id", member.couple_id).maybeSingle();
+      if (!zeile) return json({ error: "Bericht nicht gefunden." }, 404);
+      if (zeile.status !== "running") return json({ ok: true, status: zeile.status });
+      if (!zeile.openai_response_id) {
+        await admin.from("reports").update({
+          status: "error", error_msg: "Kein Hintergrund-Auftrag hinterlegt (Lauf von vor der Umstellung auf asynchrone Verarbeitung).",
+        }).eq("id", zeile.id);
+        return json({ ok: true, status: "error" });
+      }
+
+      const ergebnis = await holeHintergrundantwort(zeile.openai_response_id);
+      if (!ergebnis.fertig) return json({ ok: true, status: "running" });
+      if ("fehler" in ergebnis) {
+        await admin.from("reports").update({ status: "error", error_msg: ergebnis.fehler }).eq("id", zeile.id);
+        return json({ ok: true, status: "error" });
+      }
+
+      if (zeile.stage === "notizen") {
+        const { data: beide } = await admin.from("couple_members")
+          .select("user_id, display_name").eq("couple_id", zeile.couple_id);
+        const nameMe = (beide ?? []).find((m) => m.user_id === zeile.requested_by)?.display_name ?? "Person 1";
+        const nameP = (beide ?? []).find((m) => m.user_id !== zeile.requested_by)?.display_name ?? "Person 2";
+        const notizen = ergebnis.text;
+
+        const berichtPrompt = `${GRUNDREGELN}
 
 AUFGABE: Beide Partner haben ausdruecklich eingewilligt, dass du ihr gesamtes Material fuer ein gemeinsames "Beziehungsbild" auswertest, das BEIDE lesen werden. Deine interne Tiefenanalyse liegt vor (unten). Schreibe daraus einen Bericht in genau drei Teilen, insgesamt 700-1200 Woerter. Geh in die Tiefe: konkret statt allgemein, benenne die Dynamiken aus deiner Analyse klar — Verstaendnis entsteht durch Praezision, nicht durch Weichzeichnen:
 
@@ -576,21 +644,27 @@ STRIKTE REGELN: Keine woertlichen Zitate aus dem Material. Keine Detailoffenbaru
 DEINE INTERNE TIEFENANALYSE:
 ${notizen}
 
-Antworte nur mit dem Bericht (drei Teile mit Ueberschriften).`, 5000, true, restfrist(start));
+Antworte nur mit dem Bericht (drei Teile mit Ueberschriften).`;
 
-          await admin.from("reports").update({ content: report, status: "done" }).eq("id", reportId);
-        } catch (e) {
-          console.error("Beziehungsbild fehlgeschlagen:", e);
-          await admin.from("reports").update({
-            status: "error", error_msg: e instanceof Error ? e.message : String(e),
-          }).eq("id", reportId);
-        }
-      })());
+        const neueId = await starteHintergrundantwort(berichtPrompt, 5000, true);
+        await admin.from("reports").update({
+          stage: "bericht", openai_response_id: neueId, notizen,
+        }).eq("id", zeile.id);
+        return json({ ok: true, status: "running" });
+      }
 
-      return json({ ok: true, id: reportId, status: "running" });
+      // stage === "bericht": fertig
+      await admin.from("reports").update({ content: ergebnis.text, status: "done" }).eq("id", zeile.id);
+      if (zeile.requested_by) {
+        const { data: beide } = await admin.from("couple_members")
+          .select("user_id").eq("couple_id", zeile.couple_id);
+        const empfaenger = (beide ?? []).find((m) => m.user_id !== zeile.requested_by)?.user_id;
+        if (empfaenger) await benachrichtigeBeiFreigabe(admin, zeile.couple_id, empfaenger, "report");
+      }
+      return json({ ok: true, status: "done" });
     }
 
-    // ─── Dein Spiegel: im Hintergrund erzeugen ──────────────
+    // ─── Dein Spiegel: Stufe 1 anstossen, Rest per Polling ──
     if (body.action === "mirror") {
       if (!partner) return json({ error: "Der Spiegel braucht euch beide — deine Partnerin oder dein Partner ist noch nicht beigetreten." }, 400);
       const { data: consents } = await admin.from("couple_members")
@@ -602,21 +676,11 @@ Antworte nur mit dem Bericht (drei Teile mit Ueberschriften).`, 5000, true, rest
 
       await haengendeLaeufeAufraeumen(admin, "mirrors", member.couple_id);
 
-      const { data: zeile } = await admin.from("mirrors")
-        .insert({ couple_id: member.couple_id, user_id: user.id, content: "", status: "running" })
-        .select("id").single();
-      const mirrorId = zeile?.id;
       const nameMe = member.display_name ?? "du";
-      const coupleId = member.couple_id;
-      const uidMe = user.id, uidP = partner.user_id;
+      const matMe = await materialFuer(admin, member.couple_id, user.id);
+      const matP = await materialFuer(admin, member.couple_id, partner.user_id);
 
-      imHintergrund((async () => {
-        const start = Date.now();
-        try {
-          const matMe = await materialFuer(admin, coupleId, uidMe);
-          const matP = await materialFuer(admin, coupleId, uidP);
-
-          const notizen = await claude(`${GRUNDREGELN}
+      const notizenPrompt = `${GRUNDREGELN}
 
 AUFGABE: Du bereitest einen "Spiegel" fuer ${nameMe} vor: individuelles Feedback, das NUR ${nameMe} lesen wird. Du kennst das Material beider Seiten — aber die Blickrichtung deiner Analyse zeigt AUSSCHLIESSLICH auf ${nameMe}. Das Material der anderen Person dient dir nur als Linse. Erstelle interne Notizen zu:
 1. SELBSTBILD vs. WIRKUNG: Wo koennte das Verhalten von ${nameMe} anders ankommen, als es gemeint ist?
@@ -634,27 +698,63 @@ ${matMe}
 MATERIAL DER ANDEREN PERSON (nur als Linse, Sperrregel beachten):
 ${matP}
 
-Antworte nur mit den nummerierten Notizen.`, 4000, true, restfrist(start));
+Antworte nur mit den nummerierten Notizen.`;
 
-          const mirrorText = await claude(`${GRUNDREGELN}
+      const responseId = await starteHintergrundantwort(notizenPrompt, 4000, true);
+
+      const { data: zeile } = await admin.from("mirrors").insert({
+        couple_id: member.couple_id, user_id: user.id, content: null, status: "running",
+        stage: "notizen", openai_response_id: responseId,
+      }).select("id").single();
+
+      return json({ ok: true, id: zeile?.id, status: "running" });
+    }
+
+    // ─── Dein Spiegel: Fortschritt abholen, ggf. Stufe 2 anstossen ──
+    if (body.action === "mirror_poll") {
+      const { data: zeile } = await admin.from("mirrors").select("*")
+        .eq("id", body.id).eq("user_id", user.id).maybeSingle();
+      if (!zeile) return json({ error: "Spiegel nicht gefunden." }, 404);
+      if (zeile.status !== "running") return json({ ok: true, status: zeile.status });
+      if (!zeile.openai_response_id) {
+        await admin.from("mirrors").update({
+          status: "error", error_msg: "Kein Hintergrund-Auftrag hinterlegt (Lauf von vor der Umstellung auf asynchrone Verarbeitung).",
+        }).eq("id", zeile.id);
+        return json({ ok: true, status: "error" });
+      }
+
+      const ergebnis = await holeHintergrundantwort(zeile.openai_response_id);
+      if (!ergebnis.fertig) return json({ ok: true, status: "running" });
+      if ("fehler" in ergebnis) {
+        await admin.from("mirrors").update({ status: "error", error_msg: ergebnis.fehler }).eq("id", zeile.id);
+        return json({ ok: true, status: "error" });
+      }
+
+      if (zeile.stage === "notizen") {
+        const { data: meRow } = await admin.from("couple_members")
+          .select("display_name").eq("couple_id", zeile.couple_id).eq("user_id", zeile.user_id).maybeSingle();
+        const nameMe = meRow?.display_name ?? "du";
+        const notizen = ergebnis.text;
+
+        const spiegelPrompt = `${GRUNDREGELN}
 
 AUFGABE: Schreibe aus deinen internen Notizen (unten) den "Spiegel" fuer ${nameMe} — einen persoenlichen Text (400-700 Woerter), den nur ${nameMe} liest. Sprich ${nameMe} direkt an. Enthalte: was gut gelingt und traegt; wie das eigene Verhalten vermutlich ankommt; den eigenen Anteil an der Dynamik; blinde Flecken — wohlwollend, aber ohne Weichzeichnen; und am Ende 1-2 konkrete Wachstumskanten mit einem umsetzbaren ersten Schritt. Keine Aussagen darueber, was die andere Person fuehlt, denkt, plant oder privat geschrieben hat — die SPERRREGEL gilt unveraendert. Kein Urteil ueber die Beziehung.
 
 DEINE INTERNEN NOTIZEN:
 ${notizen}
 
-Antworte nur mit dem Spiegel-Text.`, 4000, true, restfrist(start));
+Antworte nur mit dem Spiegel-Text.`;
 
-          await admin.from("mirrors").update({ content: mirrorText, status: "done" }).eq("id", mirrorId);
-        } catch (e) {
-          console.error("Spiegel fehlgeschlagen:", e);
-          await admin.from("mirrors").update({
-            status: "error", error_msg: e instanceof Error ? e.message : String(e),
-          }).eq("id", mirrorId);
-        }
-      })());
+        const neueId = await starteHintergrundantwort(spiegelPrompt, 4000, true);
+        await admin.from("mirrors").update({
+          stage: "spiegel", openai_response_id: neueId, notizen,
+        }).eq("id", zeile.id);
+        return json({ ok: true, status: "running" });
+      }
 
-      return json({ ok: true, id: mirrorId, status: "running" });
+      // stage === "spiegel": fertig
+      await admin.from("mirrors").update({ content: ergebnis.text, status: "done" }).eq("id", zeile.id);
+      return json({ ok: true, status: "done" });
     }
 
     // ─── Zwischenraum fragt: gezielte Fragen fuer ein ganzheitliches Bild ─
@@ -720,32 +820,7 @@ Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","..."]}`, 900);
       if (!["chat", "gate", "report", "mirror", "partner_joined"].includes(kind)) {
         return json({ error: "Unbekannter Benachrichtigungstyp." }, 400);
       }
-      const { data: pm } = await admin.from("couple_members")
-        .select("email_freq").eq("couple_id", member.couple_id).eq("user_id", partner.user_id).maybeSingle();
-      const freq = pm?.email_freq ?? "daily";
-      if (freq === "none") return json({ ok: true, skipped: "abbestellt" });
-
-      // "partner_joined" nie sofort - nur in der Tageszusammenfassung
-      const instant = freq === "instant" && kind !== "partner_joined";
-
-      // Sofortmails hoechstens alle 30 Minuten je Typ
-      let send = instant;
-      if (instant) {
-        const { data: recent } = await admin.from("email_events")
-          .select("id").eq("recipient_id", partner.user_id).eq("kind", kind).eq("sent_instant", true)
-          .gte("created_at", new Date(Date.now() - 30 * 60000).toISOString()).limit(1);
-        if ((recent ?? []).length) send = false;
-      }
-
-      if (send) {
-        const { data: pu } = await admin.auth.admin.getUserById(partner.user_id);
-        const to = pu?.user?.email;
-        if (to) await sendMail(to, betreff(kind), textFor(kind));
-      }
-      await admin.from("email_events").insert({
-        couple_id: member.couple_id, recipient_id: partner.user_id, kind,
-        sent_instant: send, included_in_daily: send,
-      });
+      const send = await benachrichtigeBeiFreigabe(admin, member.couple_id, partner.user_id, kind);
       return json({ ok: true, sent: send });
     }
 
@@ -979,6 +1054,42 @@ function textFor(kind: string): string {
     case "partner_joined": return "Deine Partnerin oder dein Partner ist eurem Raum beigetreten.";
     default: return "Es gibt Neues in eurem Zwischenraum.";
   }
+}
+
+// Loest die Benachrichtigungs-/Drossel-Logik fuer EINEN Empfaenger aus.
+// Wird sowohl von der "notify"-Aktion (Empfaenger = der Partner des
+// aufrufenden Nutzers) als auch von report_poll beim tatsaechlichen Abschluss
+// des Beziehungsbilds genutzt (Empfaenger dort ueber requested_by bestimmt,
+// unabhaengig davon, wessen Browser den letzten Poll-Tick ausgeloest hat).
+async function benachrichtigeBeiFreigabe(
+  admin: ReturnType<typeof createClient>, coupleId: string, empfaengerId: string, kind: string,
+): Promise<boolean> {
+  const { data: pm } = await admin.from("couple_members")
+    .select("email_freq").eq("couple_id", coupleId).eq("user_id", empfaengerId).maybeSingle();
+  const freq = pm?.email_freq ?? "daily";
+  if (freq === "none") return false;
+
+  // "partner_joined" nie sofort - nur in der Tageszusammenfassung
+  const instant = freq === "instant" && kind !== "partner_joined";
+
+  // Sofortmails hoechstens alle 30 Minuten je Typ
+  let send = instant;
+  if (instant) {
+    const { data: recent } = await admin.from("email_events")
+      .select("id").eq("recipient_id", empfaengerId).eq("kind", kind).eq("sent_instant", true)
+      .gte("created_at", new Date(Date.now() - 30 * 60000).toISOString()).limit(1);
+    if ((recent ?? []).length) send = false;
+  }
+
+  if (send) {
+    const { data: pu } = await admin.auth.admin.getUserById(empfaengerId);
+    const to = pu?.user?.email;
+    if (to) await sendMail(to, betreff(kind), textFor(kind));
+  }
+  await admin.from("email_events").insert({
+    couple_id: coupleId, recipient_id: empfaengerId, kind, sent_instant: send, included_in_daily: send,
+  });
+  return send;
 }
 
 async function sendMail(to: string, subject: string, body: string) {

@@ -404,3 +404,27 @@ update mirrors set status = 'error',
        error_msg = 'Der Lauf wurde von der Laufzeitumgebung abgebrochen (Zeitlimit ueberschritten).'
  where status = 'running' and coalesce(content, '') = ''
    and created_at < now() - interval '15 minutes';
+
+-- ─────────────────────────────────────────────────────────────
+-- Delta 2026-08-06d: Beziehungsbild/Spiegel ueber OpenAIs
+-- Responses-API mit background:true statt synchroner Chat-
+-- Completion in EdgeRuntime.waitUntil. Grund: die Supabase-
+-- Laufzeit hat Hintergrund-Taks beobachtbar mitten im Lauf
+-- abgeraeumt (ohne dass der eigene catch-Zweig noch griff),
+-- weil die Denkzeit tiefer Analysen die Lebensdauer der Edge
+-- Function ueberschritten hat. Jetzt startet die Funktion den
+-- Modell-Lauf nur noch und kehrt sofort zurueck; ein separater
+-- Poll-Aufruf (vom Frontend alle 5s) fragt den Fortschritt ab
+-- und stoesst die naechste Stufe an. Keine Denktiefe wird mehr
+-- beschnitten, weil kein Funktionsaufruf mehr laenger als ein
+-- paar Sekunden laufen muss.
+-- ─────────────────────────────────────────────────────────────
+
+alter table reports add column if not exists stage text not null default 'notizen';
+alter table reports add column if not exists openai_response_id text;
+alter table reports add column if not exists notizen text;
+alter table reports add column if not exists requested_by uuid references auth.users(id) on delete set null;
+
+alter table mirrors add column if not exists stage text not null default 'notizen';
+alter table mirrors add column if not exists openai_response_id text;
+alter table mirrors add column if not exists notizen text;

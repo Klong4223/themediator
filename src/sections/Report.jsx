@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { supabase, callAI } from "../supabase.js";
 import { C, st, Btn, Convergence, ErrorNote } from "../ui.jsx";
 
@@ -26,11 +26,38 @@ export default function Report({ membership }) {
   const laufend = reports.some((r) => r.status === "running" && !istHaengend(r))
     || mirrors.some((m) => m.status === "running" && !istHaengend(m));
 
+  // Per Ref statt direkt aus dem State gelesen, damit der Intervall-Callback
+  // (der nur einmal beim Start des Laufs neu aufgesetzt wird) immer den
+  // aktuellen Stand sieht statt einer veralteten Momentaufnahme.
+  const reportsRef = useRef(reports);
+  const mirrorsRef = useRef(mirrors);
+  useEffect(() => { reportsRef.current = reports; }, [reports]);
+  useEffect(() => { mirrorsRef.current = mirrors; }, [mirrors]);
+
   useEffect(() => {
     if (!laufend) return;
-    const t = setInterval(load, 5000);
+    const t = setInterval(tick, 5000);
     return () => clearInterval(t);
   }, [laufend]);
+
+  // Stoesst pro laufender (nicht haengender) Zeile den naechsten Schritt an —
+  // Beziehungsbild und Spiegel entstehen jetzt in mehreren kurzen Etappen
+  // (Notizen -> Bericht/Spiegel), nicht mehr in einem einzigen, potenziell
+  // minutenlangen Hintergrundlauf. Fehler beim Anstossen sind kein Drama,
+  // der naechste Tick versucht es erneut.
+  async function tick() {
+    for (const r of reportsRef.current) {
+      if (r.status === "running" && !istHaengend(r)) {
+        try { await callAI({ action: "report_poll", id: r.id }); } catch { /* naechster Tick */ }
+      }
+    }
+    for (const m of mirrorsRef.current) {
+      if (m.status === "running" && !istHaengend(m)) {
+        try { await callAI({ action: "mirror_poll", id: m.id }); } catch { /* naechster Tick */ }
+      }
+    }
+    await load();
+  }
 
   async function load() {
     const { data: members } = await supabase.from("couple_members")
@@ -72,11 +99,14 @@ export default function Report({ membership }) {
     setMirrorBusy(false);
   }
 
+  // Die Benachrichtigung der anderen Seite loest der Server jetzt selbst aus,
+  // sobald der Bericht wirklich fertig ist (report_poll) — nicht mehr hier,
+  // weil "fertig" bei mehrstufiger Hintergrundverarbeitung erst nach
+  // mehreren Poll-Ticks feststeht, nicht direkt nach diesem Aufruf.
   async function generate() {
     setBusy(true); setError(null); setLetzterFehler(null);
     try {
       await callAI({ action: "report" });
-      try { await callAI({ action: "notify", kind: "report" }); } catch { /* optional */ }
       await load();
       setBusy(false);
       return;

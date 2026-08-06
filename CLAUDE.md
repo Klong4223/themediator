@@ -96,6 +96,10 @@ supabase/
 
 Beziehungsbild und Spiegel laufen über `EdgeRuntime.waitUntil` im Hintergrund
 und setzen `status` in der Datenbank; das Frontend pollt alle 5 Sekunden.
+Seit Version `2026-08-06c` hat jeder Modellaufruf ein `AbortController`-Limit
+(150 s) und der Gesamtlauf ein Budget (330 s) — Stand 06.08. beobachtet aber
+Läufe, die auch das deutlich überschreiten, ohne dass `status` auf `error`
+kippt. Ursache noch offen, siehe Backlog.
 
 ---
 
@@ -138,22 +142,42 @@ Reihenfolge immer: SQL → Edge Function → Frontend.
 
 ## Offener Backlog
 
-1. **Versionsinfo in den Einstellungen** — Frontend-Version und tatsächlich
+0. **Automatische Datenbank-Backups aktivieren** — Stand 06.08.2026 aus
+   (`pitr_enabled: false`, keine gespeicherten Backups laut Management-API).
+   Braucht mindestens den Pro-Plan (Settings → Add-ons). Bis dahin: jeder
+   schreibende Eingriff in die Datenbank ist ohne Netz. Dringlicher als
+   Punkt 5, weil Verschlüsselung ohne Backup das Risiko nur verschiebt.
+1. **Laufzeit von Beziehungsbild/Spiegel in den Griff bekommen, ohne die
+   Modelltiefe zu beschneiden** — der Kernwert der Begleitung hängt an
+   Aufrufen, die bewusst lange und gründlich denken dürfen. Das AbortController-
+   Timeout aus `2026-08-06c` schützt die Datenbankzeile (kein ewiges
+   „running" mehr), löst aber nicht das eigentliche Problem: Modellaufrufe,
+   die die Wall-Clock-Grenze der Edge Function reißen, laufen weiterhin ins
+   Leere. Naheliegendster Ausweg: OpenAI-Aufrufe über die Responses-API mit
+   `background: true` starten, Antwort per Polling abholen — das entkoppelt
+   Denkzeit des Modells von der Lebensdauer der Edge Function vollständig.
+   Zweitschritt, falls das nicht reicht: den zweistufigen Ablauf (Notizen →
+   Bericht) in zwei eigenständige Funktionsaufrufe zerlegen, die je nur einen
+   Modellaufruf überstehen müssen.
+2. **Versionsinfo in den Einstellungen** — Frontend-Version und tatsächlich
    deployte Edge-Function-Version anzeigen (letztere per `?ping=1`), damit
    sichtbar ist, ob ein Update angekommen ist.
-2. **Tagebuch-Ablauf:** Ein neuer Eintrag soll sofort oben in der Liste
+3. **Tagebuch-Ablauf:** Ein neuer Eintrag soll sofort oben in der Liste
    erscheinen, der Ladehinweis direkt darunter — dort, wo die Antwort kommt.
    Aktuell steht „Zwischenraum liest …" oben am Eingabefeld, der Eintrag
    erscheint weit darunter.
-3. **Sichtbarer Arbeitsstatus** überall statt des unscheinbaren Hinweises:
+4. **Sichtbarer Arbeitsstatus** überall statt des unscheinbaren Hinweises:
    deutlich erkennbar, dass die KI arbeitet, gern mit Phasenanzeige
    („liest deinen Eintrag" → „formuliert eine Rückmeldung"). Betrifft Tagebuch,
    Dialog, Konflikte, Nachfragen, Chat-Moderation, Beziehungsbild, Spiegel.
-4. **Barometer:** je Partner anzeigen, wieviel Inhalt eingeflossen ist (alles
+   Für Beziehungsbild/Spiegel gibt es seit 06.08. immerhin eine Stale-Erkennung
+   mit Wiederholen-Knopf (`Report.jsx`) — das ist ein Netz gegen ewiges Warten,
+   keine Phasenanzeige.
+5. **Barometer:** je Partner anzeigen, wieviel Inhalt eingeflossen ist (alles
    Geschriebene und Beantwortete) und wie aussagekräftig das Beziehungsbild
    dadurch wird. Offene Fragen: Sieht jeder die Werte des anderen? Zählt
    Umfang oder Themenabdeckung?
-5. **Verschlüsselung der Inhalte in der Datenbank** — als Letztes. Ziel:
+6. **Verschlüsselung der Inhalte in der Datenbank** — als Letztes. Ziel:
    Schutz gegen Datenbank-Leaks und versehentliches Mitlesen im Table Editor.
    Schlüssel als Edge-Function-Secret. Klar kommunizierte Grenze: schützt nicht
    gegen den entschlossenen Betreiber; echte Nulleinsicht ginge nur
