@@ -11,6 +11,7 @@ export default function Report({ membership }) {
   const [mirrorBusy, setMirrorBusy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [letzterFehler, setLetzterFehler] = useState(null);
 
   async function load() {
     const { data: members } = await supabase.from("couple_members")
@@ -39,24 +40,26 @@ export default function Report({ membership }) {
   }
 
   async function generateMirror() {
-    setMirrorBusy(true); setError(null);
+    setMirrorBusy(true); setError(null); setLetzterFehler(null);
     try {
       await callAI({ action: "mirror" });
       await load();
     } catch (e) {
-      setError("Der Spiegel konnte nicht erstellt werden. Bitte erneut versuchen.");
+      setError("Der Spiegel konnte nicht erstellt werden: " + (e?.message || JSON.stringify(e)));
+      setLetzterFehler("mirror");
     }
     setMirrorBusy(false);
   }
 
   async function generate() {
-    setBusy(true); setError(null);
+    setBusy(true); setError(null); setLetzterFehler(null);
     try {
       await callAI({ action: "report" });
       try { await callAI({ action: "notify", kind: "report" }); } catch { /* optional */ }
       await load();
     } catch (e) {
-      setError("Der Bericht konnte nicht erstellt werden. Bitte erneut versuchen.");
+      setError("Der Bericht konnte nicht erstellt werden: " + (e?.message || JSON.stringify(e)));
+      setLetzterFehler("report");
     }
     setBusy(false);
   }
@@ -80,6 +83,14 @@ export default function Report({ membership }) {
           Du kannst die Freigabe jederzeit zurückziehen.
         </p>
         <ErrorNote>{error}</ErrorNote>
+        {letzterFehler && (
+          <div style={{ marginBottom: 14 }}>
+            <Btn onClick={() => (letzterFehler === "report" ? generate() : generateMirror())}
+              disabled={busy || mirrorBusy}>
+              {busy || mirrorBusy ? "Neuer Versuch läuft …" : "Erneut versuchen"}
+            </Btn>
+          </div>
+        )}
         <div style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
           <label style={{ display: "flex", gap: 10, alignItems: "center", cursor: "pointer", fontSize: 15 }}>
             <input type="checkbox" checked={myConsent} onChange={toggleConsent} />
