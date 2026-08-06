@@ -2,14 +2,19 @@ import React, { useEffect, useRef, useState } from "react";
 import { supabase, callAI } from "../supabase.js";
 import { C, st, Btn, Convergence, ErrorNote } from "../ui.jsx";
 
-// Ein Lauf, der von der Laufzeitumgebung abgeräumt wird, bleibt in der
-// Datenbank auf "running" stehen — ohne diesen Riegel würde die Seite endlos
-// weiterwarten. Nach dieser Zeit gilt ein Lauf als abgebrochen.
-const ABGEBROCHEN_NACH_MS = 10 * 60 * 1000;
+// Seit der Umstellung auf OpenAIs Responses-API mit background:true gibt es
+// KEIN Zeitlimit mehr fuer die Denktiefe des Modells — das ist gewollt, eine
+// tiefe Analyse darf laenger dauern. "status" aus der Datenbank ist deshalb
+// die einzige verlaessliche Quelle, ob ein Lauf noch aktiv ist: weiterpollen,
+// bis der Server selbst "done" oder "error" meldet. Diese Schwelle bestimmt
+// nur noch, ab wann die Seite den Hinweis "dauert laenger als sonst" zeigt —
+// sie behauptet NICHT, dass der Server etwas abgebrochen hat, und sie stoppt
+// das Polling nicht.
+const UNGEWOEHNLICH_LANGE_MS = 20 * 60 * 1000;
 
-const istHaengend = (zeile) =>
+const dauertUngewoehnlichLang = (zeile) =>
   zeile.status === "running" &&
-  Date.now() - new Date(zeile.created_at).getTime() > ABGEBROCHEN_NACH_MS;
+  Date.now() - new Date(zeile.created_at).getTime() > UNGEWOEHNLICH_LANGE_MS;
 
 export default function Report({ membership }) {
   const [myConsent, setMyConsent] = useState(false);
@@ -22,9 +27,11 @@ export default function Report({ membership }) {
   const [error, setError] = useState(null);
   const [letzterFehler, setLetzterFehler] = useState(null);
 
-  // Hängende Läufe zählen nicht als "laufend" — sonst pollt die Seite ewig weiter.
-  const laufend = reports.some((r) => r.status === "running" && !istHaengend(r))
-    || mirrors.some((m) => m.status === "running" && !istHaengend(m));
+  // Solange der Server "running" sagt, pollt die Seite weiter — auch nach
+  // ungewoehnlich langer Zeit. Nur der Server weiss, ob der Lauf noch aktiv
+  // ist; die Seite darf das nicht aus verstrichener Zeit erraten.
+  const laufend = reports.some((r) => r.status === "running")
+    || mirrors.some((m) => m.status === "running");
 
   // Per Ref statt direkt aus dem State gelesen, damit der Intervall-Callback
   // (der nur einmal beim Start des Laufs neu aufgesetzt wird) immer den
@@ -47,12 +54,12 @@ export default function Report({ membership }) {
   // der naechste Tick versucht es erneut.
   async function tick() {
     for (const r of reportsRef.current) {
-      if (r.status === "running" && !istHaengend(r)) {
+      if (r.status === "running") {
         try { await callAI({ action: "report_poll", id: r.id }); } catch { /* naechster Tick */ }
       }
     }
     for (const m of mirrorsRef.current) {
-      if (m.status === "running" && !istHaengend(m)) {
+      if (m.status === "running") {
         try { await callAI({ action: "mirror_poll", id: m.id }); } catch { /* naechster Tick */ }
       }
     }
@@ -189,14 +196,23 @@ export default function Report({ membership }) {
             <span style={{ fontSize: 12, color: C.inkSoft }}>
               {new Date(m.created_at).toLocaleString("de-DE", { dateStyle: "long", timeStyle: "short" })}
             </span>
-            {m.status === "running" && !istHaengend(m) ? (
-              <p style={{ ...st.body, marginTop: 6 }}>Zwischenraum schaut genau hin … Das dauert ein bis zwei Minuten.</p>
-            ) : m.status === "error" || istHaengend(m) ? (
+            {m.status === "running" ? (
+              <div style={{ marginTop: 6 }}>
+                <p style={st.body}>
+                  {dauertUngewoehnlichLang(m)
+                    ? "Zwischenraum denkt noch — das dauert diesmal ungewöhnlich lange. Du kannst weiter warten oder es parallel noch einmal versuchen."
+                    : "Zwischenraum schaut genau hin … Das dauert ein bis zwei Minuten."}
+                </p>
+                {dauertUngewoehnlichLang(m) && (
+                  <Btn onClick={generateMirror} disabled={mirrorBusy}>
+                    {mirrorBusy ? "Neuer Versuch läuft …" : "Noch einmal versuchen"}
+                  </Btn>
+                )}
+              </div>
+            ) : m.status === "error" ? (
               <div style={{ marginTop: 6 }}>
                 <p style={{ ...st.body, color: C.danger }}>
-                  {istHaengend(m)
-                    ? "Die Erstellung wurde abgebrochen — sie hat länger gedauert, als der Server zulässt."
-                    : `Fehlgeschlagen${m.error_msg ? `: ${m.error_msg}` : "."}`}
+                  Fehlgeschlagen{m.error_msg ? `: ${m.error_msg}` : "."}
                 </p>
                 <Btn onClick={generateMirror} disabled={mirrorBusy}>
                   {mirrorBusy ? "Neuer Versuch läuft …" : "Noch einmal versuchen"}
@@ -214,17 +230,23 @@ export default function Report({ membership }) {
           <span style={{ fontSize: 12, color: C.inkSoft }}>
             {new Date(r.created_at).toLocaleString("de-DE", { dateStyle: "long", timeStyle: "short" })}
           </span>
-          {r.status === "running" && !istHaengend(r) ? (
-            <p style={{ ...st.body, marginTop: 8 }}>
-              Zwischenraum schreibt euer Beziehungsbild … Das dauert ein bis zwei Minuten.
-              Du kannst die Seite ruhig verlassen — der Bericht erscheint hier, sobald er fertig ist.
-            </p>
-          ) : r.status === "error" || istHaengend(r) ? (
+          {r.status === "running" ? (
+            <div style={{ marginTop: 8 }}>
+              <p style={st.body}>
+                {dauertUngewoehnlichLang(r)
+                  ? "Zwischenraum denkt noch an eurem Beziehungsbild — das dauert diesmal ungewöhnlich lange. Du kannst die Seite ruhig verlassen, es erscheint hier, sobald es fertig ist, oder es parallel noch einmal versuchen."
+                  : "Zwischenraum schreibt euer Beziehungsbild … Das dauert ein bis zwei Minuten. Du kannst die Seite ruhig verlassen — der Bericht erscheint hier, sobald er fertig ist."}
+              </p>
+              {both && dauertUngewoehnlichLang(r) && (
+                <Btn onClick={generate} disabled={busy}>
+                  {busy ? "Neuer Versuch läuft …" : "Noch einmal versuchen"}
+                </Btn>
+              )}
+            </div>
+          ) : r.status === "error" ? (
             <div style={{ marginTop: 8 }}>
               <p style={{ ...st.body, color: C.danger }}>
-                {istHaengend(r)
-                  ? "Die Erstellung wurde abgebrochen — sie hat länger gedauert, als der Server zulässt."
-                  : `Die Erstellung ist fehlgeschlagen${r.error_msg ? `: ${r.error_msg}` : "."}`}
+                Die Erstellung ist fehlgeschlagen{r.error_msg ? `: ${r.error_msg}` : "."}
               </p>
               {both && (
                 <Btn onClick={generate} disabled={busy}>
