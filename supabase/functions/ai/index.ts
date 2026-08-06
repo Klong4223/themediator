@@ -227,7 +227,7 @@ async function holeHintergrundantwort(responseId: string): Promise<Hintergrundst
   return { fertig: true, fehler: `OpenAI-Lauf beendet mit Status '${data.status}' (${grund}).` };
 }
 
-const VERSION = "2026-08-06d";
+const VERSION = "2026-08-06e";
 
 // Falls ein Lauf nie zu Ende gepollt wird (z.B. beide Browser-Tabs
 // geschlossen, bevor der letzte Poll-Tick kam), bleibt die Zeile sonst fuer
