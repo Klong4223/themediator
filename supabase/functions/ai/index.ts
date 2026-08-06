@@ -180,8 +180,24 @@ async function holeHintergrundantwort(responseId: string): Promise<Hintergrundst
   if (data.status === "queued" || data.status === "in_progress") return { fertig: false };
   if (data.status === "completed") {
     const text = String(data.output_text ?? "").trim();
-    if (!text) return { fertig: true, fehler: "Leere Antwort trotz Status 'completed'." };
-    return { fertig: true, text };
+    if (text) return { fertig: true, text };
+
+    // output_text leer trotz "completed": Der haeufigste Grund ist eine
+    // inhaltliche Ablehnung (refusal) statt eines echten Fehlers — die
+    // steckt in einem eigenen Content-Typ und wird vom Kurzfeld output_text
+    // stillschweigend uebersprungen. Die Refusal-Begruendung stammt von
+    // OpenAI selbst (generischer Ablehnungstext, kein Rohtext der
+    // Nutzerinnen) und macht sichtbar, WORAN es tatsaechlich liegt.
+    const items: Array<{ type?: string; content?: Array<{ type?: string; refusal?: string }> }> =
+      Array.isArray(data.output) ? data.output : [];
+    const refusal = items
+      .flatMap((it) => Array.isArray(it.content) ? it.content : [])
+      .find((c) => c?.type === "refusal");
+    if (refusal) {
+      return { fertig: true, fehler: `Vom Modell abgelehnt: ${refusal.refusal ?? "(kein Grund angegeben)"}` };
+    }
+    const itemTypen = items.map((it) => it.type ?? "?").join(", ") || "keine";
+    return { fertig: true, fehler: `Leere Antwort trotz Status 'completed' (Antwort-Elemente: ${itemTypen}).` };
   }
   const grund = data.incomplete_details?.reason ?? data.error?.message ?? "unbekannt";
   return { fertig: true, fehler: `OpenAI-Lauf beendet mit Status '${data.status}' (${grund}).` };
