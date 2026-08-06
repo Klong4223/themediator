@@ -34,6 +34,7 @@ export const QUESTIONS = [
 export default function AboutYou({ membership }) {
   const [row, setRow] = useState(undefined);
   const [profile, setProfile] = useState("");
+  const [chronik, setChronik] = useState([]);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
 
@@ -44,6 +45,10 @@ export default function AboutYou({ membership }) {
     const { data: p } = await supabase.from("ai_profiles").select("profile")
       .eq("user_id", membership.user_id).maybeSingle();
     setProfile(p?.profile || "");
+    const { data: ch } = await supabase.from("chronicle")
+      .select("id, observation, created_at")
+      .order("created_at", { ascending: false }).limit(200);
+    setChronik(ch || []);
   }
   useEffect(() => { load(); }, []);
 
@@ -109,6 +114,7 @@ export default function AboutYou({ membership }) {
           <h2 style={st.h2}>So versteht dich Zwischenraum</h2>
           <p style={{ ...st.body, whiteSpace: "pre-wrap" }}>{profile || "(noch leer — dein erster Tagebucheintrag füllt es)"}</p>
         </section>
+        <Chronik eintraege={chronik} role={membership.role} />
       </div>
     );
   }
@@ -169,7 +175,30 @@ export default function AboutYou({ membership }) {
         <p style={st.hint}>Dein verdichtetes Profil — es wächst mit jedem Eintrag weiter. Nur du siehst es.</p>
         <p style={{ ...st.body, whiteSpace: "pre-wrap" }}>{profile || "(noch leer)"}</p>
       </section>
+      <Chronik eintraege={chronik} role={membership.role} />
     </div>
+  );
+}
+
+function Chronik({ eintraege, role }) {
+  if (!eintraege?.length) return null;
+  return (
+    <section style={st.card}>
+      <h2 style={st.h2}>Deine Chronik</h2>
+      <p style={st.hint}>
+        Dauerhafte Beobachtungen, die Zwischenraum über die Zeit festhält — dein Langzeitgedächtnis
+        in dieser Begleitung. Nur du siehst sie; deiner Partnerin oder deinem Partner wird sie nie
+        gezeigt.
+      </p>
+      {eintraege.map((c) => (
+        <div key={c.id} style={{ paddingLeft: 12, borderLeft: `3px solid ${role === "A" ? C.a : C.b}`, marginTop: 12 }}>
+          <span style={{ fontSize: 12, color: C.inkSoft }}>
+            {new Date(c.created_at).toLocaleDateString("de-DE", { day: "numeric", month: "long", year: "numeric" })}
+          </span>
+          <p style={{ ...st.body, marginTop: 2 }}>{c.observation}</p>
+        </div>
+      ))}
+    </section>
   );
 }
 
