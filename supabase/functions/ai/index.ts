@@ -184,17 +184,30 @@ async function holeHintergrundantwort(responseId: string): Promise<Hintergrundst
   const data = await res.json();
   if (data.status === "queued" || data.status === "in_progress") return { fertig: false };
   if (data.status === "completed") {
-    const text = String(data.output_text ?? "").trim();
+    const items: Array<{ type?: string; status?: string; content?: Array<{ type?: string; text?: string; refusal?: string }> }> =
+      Array.isArray(data.output) ? data.output : [];
+
+    // Kurzfeld output_text zuerst versuchen — bricht aber offenbar bei
+    // diesem Modell manchmal leer ab, OBWOHL der Text im strukturierten
+    // output-Array laengst vorhanden ist (beobachtet 06.08.2026: message-
+    // Element mit status='completed' und Content-Typ 'output_text', aber
+    // data.output_text leer). Deshalb Fallback: Text direkt aus den
+    // Content-Elementen vom Typ 'output_text' zusammensetzen.
+    let text = String(data.output_text ?? "").trim();
+    if (!text) {
+      text = items
+        .flatMap((it) => Array.isArray(it.content) ? it.content : [])
+        .filter((c) => c?.type === "output_text")
+        .map((c) => c.text ?? "")
+        .join("\n")
+        .trim();
+    }
     if (text) return { fertig: true, text };
 
-    // output_text leer trotz "completed": Der haeufigste Grund ist eine
-    // inhaltliche Ablehnung (refusal) statt eines echten Fehlers — die
-    // steckt in einem eigenen Content-Typ und wird vom Kurzfeld output_text
-    // stillschweigend uebersprungen. Die Refusal-Begruendung stammt von
-    // OpenAI selbst (generischer Ablehnungstext, kein Rohtext der
-    // Nutzerinnen) und macht sichtbar, WORAN es tatsaechlich liegt.
-    const items: Array<{ type?: string; content?: Array<{ type?: string; refusal?: string }> }> =
-      Array.isArray(data.output) ? data.output : [];
+    // Wirklich leer — haeufigster Grund waere eine inhaltliche Ablehnung
+    // (refusal), die in einem eigenen Content-Typ steckt. Die Begruendung
+    // stammt von OpenAI selbst (generischer Ablehnungstext, kein Rohtext
+    // der Nutzerinnen) und macht sichtbar, WORAN es tatsaechlich liegt.
     const refusal = items
       .flatMap((it) => Array.isArray(it.content) ? it.content : [])
       .find((c) => c?.type === "refusal");
