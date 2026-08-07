@@ -428,3 +428,34 @@ alter table reports add column if not exists requested_by uuid references auth.u
 alter table mirrors add column if not exists stage text not null default 'notizen';
 alter table mirrors add column if not exists openai_response_id text;
 alter table mirrors add column if not exists notizen text;
+
+-- ─────────────────────────────────────────────────────────────
+-- Delta 2026-08-07: Verankerte Gespraeche zu Beziehungsbild und
+-- Spiegel (KONZEPT.md Abschnitt 7.1). Beide Gespraechstypen in
+-- einer Tabelle, weil beide privat und personenbezogen sind und
+-- deshalb dieselbe RLS-Regel gilt. Bewusst keine insert-Policy:
+-- nur die Edge Function (Service Role) schreibt, der Client liest.
+-- ─────────────────────────────────────────────────────────────
+
+create table if not exists doc_chats (
+  id uuid primary key default gen_random_uuid(),
+  couple_id uuid not null references couples(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  kind text not null check (kind in ('report', 'mirror')),
+  doc_id uuid not null,
+  sender text not null check (sender in ('user', 'ai')),
+  content text not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists doc_chats_doc_idx on doc_chats (doc_id, created_at);
+
+alter table doc_chats enable row level security;
+
+drop policy if exists "doc_chats: nur eigene lesen" on doc_chats;
+create policy "doc_chats: nur eigene lesen" on doc_chats
+  for select using (user_id = auth.uid());
+
+-- Herkunft einer KI-Eroeffnung im gemeinsamen Raum sichtbar machen
+-- (Uebergangsmoment 3 in KONZEPT.md). NULL = normale Moderation.
+alter table chat_messages add column if not exists origin text;

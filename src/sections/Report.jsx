@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { supabase, callAI } from "../supabase.js";
 import { C, st, Btn, Convergence, ErrorNote } from "../ui.jsx";
+import DocChat from "./DocChat.jsx";
 
 // Seit der Umstellung auf OpenAIs Responses-API mit background:true gibt es
 // KEIN Zeitlimit mehr fuer die Denktiefe des Modells — das ist gewollt, eine
@@ -191,7 +192,7 @@ export default function Report({ membership }) {
         ) : (
           <p style={{ ...st.hint, textAlign: "center" }}>Verfügbar, sobald beide oben freigegeben haben.</p>
         )}
-        {mirrors.map((m) => (
+        {mirrors.map((m, i) => (
           <div key={m.id} style={{ background: C.paper, borderLeft: `3px solid ${membership.role === "A" ? C.a : C.b}`, borderRadius: 8, padding: "12px 14px", marginTop: 14 }}>
             <span style={{ fontSize: 12, color: C.inkSoft }}>
               {new Date(m.created_at).toLocaleString("de-DE", { dateStyle: "long", timeStyle: "short" })}
@@ -219,13 +220,16 @@ export default function Report({ membership }) {
                 </Btn>
               </div>
             ) : (
-              <p style={{ ...st.body, whiteSpace: "pre-wrap", marginTop: 6 }}>{m.content}</p>
+              <>
+                <p style={{ ...st.body, whiteSpace: "pre-wrap", marginTop: 6 }}>{m.content}</p>
+                <DocChat kind="mirror" docId={m.id} canWrite={i === 0} />
+              </>
             )}
           </div>
         ))}
       </section>
 
-      {reports.map((r) => (
+      {reports.map((r, i) => (
         <section key={r.id} style={{ ...st.card, borderTop: `4px solid ${C.ink}` }}>
           <span style={{ fontSize: 12, color: C.inkSoft }}>
             {new Date(r.created_at).toLocaleString("de-DE", { dateStyle: "long", timeStyle: "short" })}
@@ -255,7 +259,10 @@ export default function Report({ membership }) {
               )}
             </div>
           ) : (
-            <p style={{ ...st.body, whiteSpace: "pre-wrap", marginTop: 8 }}>{r.content}</p>
+            <>
+              <p style={{ ...st.body, whiteSpace: "pre-wrap", marginTop: 8 }}>{r.content}</p>
+              <DocChat kind="report" docId={r.id} canWrite={i === 0} />
+            </>
           )}
         </section>
       ))}

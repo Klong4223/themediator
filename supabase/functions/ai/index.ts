@@ -227,7 +227,7 @@ async function holeHintergrundantwort(responseId: string): Promise<Hintergrundst
   return { fertig: true, fehler: `OpenAI-Lauf beendet mit Status '${data.status}' (${grund}).` };
 }
 
-const VERSION = "2026-08-06e";
+const VERSION = "2026-08-07a";
 
 // Falls ein Lauf nie zu Ende gepollt wird (z.B. beide Browser-Tabs
 // geschlossen, bevor der letzte Poll-Tick kam), bleibt die Zeile sonst fuer
@@ -797,6 +797,124 @@ Antworte nur mit dem Spiegel-Text.`;
       return json({ ok: true, status: "done" });
     }
 
+    // ─── Verankertes Gespraech zu Beziehungsbild oder Spiegel ─
+    // KONZEPT.md 7.2/7.3. Kontext bewusst OHNE Material der anderen Person
+    // (auch beim Spiegel nicht, obwohl der Spiegel selbst welches als Linse
+    // nutzt) -- ein Chat laedt viel staerker zum Nachbohren ein als ein
+    // einmalig erzeugter Text, jedes zusaetzliche Partner-Material waere
+    // eine neue Leckage-Quelle.
+    if (body.action === "doc_chat") {
+      const kind = String(body.kind ?? "");
+      if (!["report", "mirror"].includes(kind)) return json({ error: "Unbekannter Dokumenttyp." }, 400);
+      const docId = String(body.doc_id ?? "");
+
+      const zeile = kind === "report"
+        ? (await admin.from("reports").select("*").eq("id", docId).eq("couple_id", member.couple_id).maybeSingle()).data
+        : (await admin.from("mirrors").select("*").eq("id", docId).eq("user_id", user.id).maybeSingle()).data;
+      if (!zeile) return json({ error: "Dokument nicht gefunden." }, 404);
+      if (zeile.status !== "done") return json({ error: "Dieses Dokument ist noch nicht fertig." }, 400);
+
+      // Nur das juengste Dokument seiner Art nimmt neue Nachrichten an
+      // (Definition of Done: aeltere Gespraeche bleiben lesbar, aber
+      // schreibgeschuetzt). Betrifft nur das SCHREIBEN einer neuen
+      // Nachricht -- Lesen laeuft direkt ueber die RLS-Policy am Client.
+      const neuesteId = kind === "report"
+        ? (await admin.from("reports").select("id").eq("couple_id", member.couple_id)
+            .order("created_at", { ascending: false }).limit(1).maybeSingle()).data?.id
+        : (await admin.from("mirrors").select("id").eq("user_id", user.id)
+            .order("created_at", { ascending: false }).limit(1).maybeSingle()).data?.id;
+      const istJuengstes = neuesteId === docId;
+
+      const rohtext = body.message != null ? String(body.message).slice(0, 4000).trim() : null;
+      if (rohtext !== null) {
+        if (!rohtext) return json({ error: "Leere Nachricht." }, 400);
+        if (!istJuengstes) return json({ error: "Nur das juengste Dokument nimmt neue Nachrichten an." }, 403);
+        // WICHTIG: Erst speichern, DANN das Modell befragen. Scheitert der
+        // Modellaufruf, ist die Eingabe der Person trotzdem nie verloren.
+        await admin.from("doc_chats").insert({
+          couple_id: member.couple_id, user_id: user.id, kind, doc_id: docId, sender: "user", content: rohtext,
+        });
+      }
+
+      const { data: verlaufRaw } = await admin.from("doc_chats")
+        .select("sender, content").eq("doc_id", docId).eq("user_id", user.id)
+        .order("created_at", { ascending: true });
+      const verlauf = verlaufRaw ?? [];
+      const letzte = verlauf[verlauf.length - 1];
+      if (!letzte || letzte.sender !== "user") {
+        return json({ ok: true, antwort: null, fehler: "Nichts zu beantworten." });
+      }
+
+      const nameMe = member.display_name ?? "du";
+      const matMe = await materialFuer(admin, member.couple_id, user.id);
+      const dialogText = verlauf.map((m) => `${m.sender === "user" ? nameMe : "Zwischenraum"}: ${m.content}`).join("\n");
+      const dokTyp = kind === "report" ? "das gemeinsame Beziehungsbild" : "deinen persoenlichen Spiegel";
+
+      const prompt = `${GRUNDREGELN}
+
+GESPRAECHSREGEL: Du sprichst mit EINER Person ueber einen Text, den sie gerade gelesen hat. Fragen wie "was hat sie/er denn wirklich geschrieben?" werden kommen. Beantworte sie nie -- aber weise sie auch nie technisch ab. Lenke stattdessen auf das zurueck, was moeglich ist: "Was mir die andere Person anvertraut, gehoert ihr -- genau wie das, was du mir schreibst, dir gehoert. Aber lass uns anschauen, was ihre Sicht in dir ausloest." Immer ablehnen PLUS umlenken. Du hast fuer dieses Gespraech ohnehin kein Material der anderen Person vorliegen, nur den Text unten und das, was ${nameMe} selbst geschrieben hat.
+
+AUFGABE: ${nameMe} spricht mit dir ueber ${dokTyp}. Antworte auf die letzte Nachricht im Gespraech -- warm, konkret, ohne Therapeuten-Jargon. Frag nur nach, wenn es das Gespraech wirklich weiterbringt.
+
+DER TEXT, UEBER DEN IHR SPRECHT:
+${zeile.content}
+
+EIGENES MATERIAL VON ${nameMe} (zum Nachschlagen):
+${matMe}
+
+BISHERIGES GESPRAECH:
+${dialogText}
+
+Antworte nur mit deiner Nachricht.`;
+
+      try {
+        const antwort = await claude(prompt, 1200);
+        await admin.from("doc_chats").insert({
+          couple_id: member.couple_id, user_id: user.id, kind, doc_id: docId, sender: "ai", content: antwort,
+        });
+        return json({ ok: true, antwort });
+      } catch (e) {
+        // Die Nachricht der Person ist bereits gespeichert (siehe oben) --
+        // ein gescheiterter Modellaufruf darf das nicht rueckgaengig machen.
+        return json({ ok: true, antwort: null, fehler: e instanceof Error ? e.message : String(e) });
+      }
+    }
+
+    // ─── Ein Gespraech moderiert in den gemeinsamen Raum tragen ─
+    if (body.action === "doc_chat_share") {
+      if (!partner) return json({ error: "Der gemeinsame Raum braucht euch beide." }, 400);
+      const kind = String(body.kind ?? "");
+      if (!["report", "mirror"].includes(kind)) return json({ error: "Unbekannter Dokumenttyp." }, 400);
+      const docId = String(body.doc_id ?? "");
+      const modus = body.modus === "thema" ? "thema" : "eroeffnung";
+
+      const { data: verlauf } = await admin.from("doc_chats")
+        .select("sender, content").eq("doc_id", docId).eq("user_id", user.id)
+        .order("created_at", { ascending: true });
+      if (!verlauf?.length) return json({ error: "Noch kein Gespraech zum Teilen." }, 400);
+
+      const nameMe = member.display_name ?? "du";
+      const dialogText = verlauf.map((m) => `${m.sender === "user" ? nameMe : "Zwischenraum"}: ${m.content}`).join("\n");
+
+      const prompt = `${GRUNDREGELN}
+
+AUFGABE: Aus dem folgenden privaten Gespraech soll ${modus === "thema" ? "eine kurze Themenueberschrift (5-10 Woerter)" : "eine neutrale Eroeffnung von 2-4 Saetzen"} in den gemeinsamen Raum getragen werden, den beide lesen.
+
+STRIKT: Keine woertlichen Uebernahmen aus dem Gespraech. Keine Zuschreibung, wer was gesagt oder gefuehlt hat. Kein Vorwurf, keine Wertung, keine Parteinahme. Das Ergebnis muss sich fuer BEIDE wie eine Einladung lesen, nicht wie die Position einer Seite.
+
+PRIVATES GESPRAECH:
+${dialogText}
+
+Antworte nur mit ${modus === "thema" ? "der Ueberschrift" : "der Eroeffnung"}, ohne Anfuehrungszeichen.`;
+
+      const eroeffnung = await claude(prompt, 500);
+      await admin.from("chat_messages").insert({
+        couple_id: member.couple_id, sender_id: null, content: eroeffnung, origin: `doc_chat:${kind}`,
+      });
+      await benachrichtigeBeiFreigabe(admin, member.couple_id, partner.user_id, "chat");
+      return json({ ok: true, eroeffnung });
+    }
+
     // ─── Zwischenraum fragt: gezielte Fragen fuer ein ganzheitliches Bild ─
     if (body.action === "probe") {
       const { data: recent } = await admin.from("diary_entries").select("content")
@@ -904,6 +1022,7 @@ Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","..."]}`, 900);
       await admin.from("conflicts").delete().eq("user_id", user.id);
       await admin.from("assessments").delete().eq("user_id", user.id);
       await admin.from("probes").delete().eq("user_id", user.id);
+      await admin.from("doc_chats").delete().eq("user_id", user.id);
       await admin.from("mirrors").delete().eq("user_id", user.id);
       await admin.from("ai_profiles").delete().eq("user_id", user.id);
       await admin.from("chronicle").delete().eq("user_id", user.id);
@@ -911,6 +1030,9 @@ Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","..."]}`, 900);
       await admin.from("email_events").delete().eq("recipient_id", user.id);
       // Gemeinsame Berichte enthalten Material beider Seiten
       await admin.from("reports").delete().eq("couple_id", cid);
+      // Gespraeche zu Berichten dieses Paares wuerden sonst als verwaiste
+      // Zeiger zurueckbleiben (auch die der anderen Person).
+      await admin.from("doc_chats").delete().eq("couple_id", cid).eq("kind", "report");
       // Mitgliedschaft loesen und Gate schliessen
       await admin.from("couple_members").delete().eq("user_id", user.id);
       const { count } = await admin.from("couple_members")
