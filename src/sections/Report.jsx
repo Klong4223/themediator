@@ -17,6 +17,15 @@ const dauertUngewoehnlichLang = (zeile) =>
   zeile.status === "running" &&
   Date.now() - new Date(zeile.created_at).getTime() > UNGEWOEHNLICH_LANGE_MS;
 
+// Phasenanzeige (KONZEPT.md Stufe 2): "stage" bildet den echten,
+// zweistufigen Ablauf ab (Notizen -> Bericht), seit Beziehungsbild/Spiegel
+// ueber die Responses-API laufen. Gruendlichkeit als Qualitaetsmerkmal
+// zeigen statt sie hinter einem austauschbaren Ladehinweis zu verstecken.
+const phasenText = (zeile) =>
+  zeile.stage === "notizen"
+    ? "Zwischenraum liest euch beide und vergleicht eure Perspektiven …"
+    : "Zwischenraum schreibt euer Beziehungsbild …";
+
 export default function Report({ membership, onGespraech }) {
   const [myConsent, setMyConsent] = useState(false);
   const [partnerConsent, setPartnerConsent] = useState(false);
@@ -66,7 +75,7 @@ export default function Report({ membership, onGespraech }) {
       else { setPartnerJoined(true); setPartnerConsent(!!m.report_consent); }
     }
     const { data: r } = await supabase.from("reports")
-      .select("id, content, status, error_msg, created_at").order("created_at", { ascending: false });
+      .select("id, content, status, stage, error_msg, created_at").order("created_at", { ascending: false });
     setReports(r || []);
   }
   useEffect(() => { load(); }, []);
@@ -169,7 +178,10 @@ export default function Report({ membership, onGespraech }) {
                 {busy ? "Wird gestartet …" : reports.length ? "Neues Beziehungsbild erstellen" : "Beziehungsbild erstellen"}
               </Btn>
             )}
-            <p style={{ ...st.hint, marginTop: 10 }}>Die Analyse läuft im Hintergrund — du kannst die Seite verlassen und später zurückkommen.</p>
+            <p style={{ ...st.hint, marginTop: 10 }}>
+              Die Analyse läuft im Hintergrund und kann 10–20 Minuten dauern, weil Zwischenraum
+              gründlich nachdenkt — du kannst die Seite verlassen und später zurückkommen.
+            </p>
           </div>
         )}
       </section>
@@ -184,7 +196,7 @@ export default function Report({ membership, onGespraech }) {
               <p style={st.body}>
                 {dauertUngewoehnlichLang(r)
                   ? "Zwischenraum denkt noch an eurem Beziehungsbild — das dauert diesmal ungewöhnlich lange. Du kannst die Seite ruhig verlassen, es erscheint hier, sobald es fertig ist, oder es parallel noch einmal versuchen."
-                  : "Zwischenraum schreibt euer Beziehungsbild … Das dauert ein bis zwei Minuten. Du kannst die Seite ruhig verlassen — der Bericht erscheint hier, sobald er fertig ist."}
+                  : `${phasenText(r)} Das kann 10–20 Minuten dauern, weil Zwischenraum gründlich nachdenkt. Du kannst die Seite ruhig verlassen — der Bericht erscheint hier, sobald er fertig ist.`}
               </p>
               {both && dauertUngewoehnlichLang(r) && (
                 <Btn onClick={() => generate(true)} disabled={busy}>

@@ -16,6 +16,14 @@ const dauertUngewoehnlichLang = (zeile) =>
   zeile.status === "running" &&
   Date.now() - new Date(zeile.created_at).getTime() > UNGEWOEHNLICH_LANGE_MS;
 
+// Phasenanzeige (KONZEPT.md Stufe 2), siehe Report.jsx fuer den gleichen
+// Gedanken beim Beziehungsbild: "stage" bildet den echten zweistufigen
+// Ablauf ab (Notizen -> Spiegel).
+const phasenText = (zeile) =>
+  zeile.stage === "notizen"
+    ? "Zwischenraum schaut sich eure Situation an …"
+    : "Zwischenraum schreibt deinen Spiegel …";
+
 export default function Spiegel({ membership }) {
   const [myConsent, setMyConsent] = useState(false);
   const [partnerConsent, setPartnerConsent] = useState(false);
@@ -51,7 +59,7 @@ export default function Spiegel({ membership }) {
       else { setPartnerJoined(true); setPartnerConsent(!!m.report_consent); }
     }
     const { data: m } = await supabase.from("mirrors")
-      .select("id, content, status, error_msg, created_at").order("created_at", { ascending: false });
+      .select("id, content, status, stage, error_msg, created_at").order("created_at", { ascending: false });
     setMirrors(m || []);
   }
   useEffect(() => { load(); }, []);
@@ -119,7 +127,7 @@ export default function Spiegel({ membership }) {
               <p style={st.body}>
                 {dauertUngewoehnlichLang(m)
                   ? "Zwischenraum denkt noch — das dauert diesmal ungewöhnlich lange. Du kannst weiter warten oder es parallel noch einmal versuchen."
-                  : "Zwischenraum schaut genau hin … Das dauert ein bis zwei Minuten."}
+                  : `${phasenText(m)} Das kann 10–20 Minuten dauern, weil Zwischenraum gründlich nachdenkt.`}
               </p>
               {dauertUngewoehnlichLang(m) && (
                 <Btn onClick={generateMirror} disabled={mirrorBusy}>

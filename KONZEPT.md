@@ -546,7 +546,7 @@ nicht wie die Position einer Seite.
 | `src/sections/NaechsterSchritt.jsx` | **neu** — die Meilenstein-Karte, gespeist aus der `meilensteine`-Aktion |
 | `src/sections/Spiegel.jsx` | **neu** — aus Report.jsx extrahiert: Consent, Polling, Generierung, `DocChat` |
 | `src/sections/BeziehungsbildGespraech.jsx` | **neu** — Verweis + `DocChat` je Bericht, lebt in „Dein Raum" (nicht im Zwischenraum, siehe Stufe 3) |
-| `src/sections/Report.jsx` | Spiegel und dessen Gespräch herauslösen; `NaechsterSchritt`; Warnhinweis bei dünnem Material; klickbarer Verweis zum Gespräch statt `DocChat` direkt eingebunden. Phasenanzeige aus `stage` steht noch aus |
+| `src/sections/Report.jsx` | Spiegel und dessen Gespräch herauslösen; `NaechsterSchritt`; Warnhinweis bei dünnem Material; klickbarer Verweis zum Gespräch statt `DocChat` direkt eingebunden; Phasenanzeige aus `stage` |
 | `src/sections/AboutYou.jsx` | `Spiegel` und `BeziehungsbildGespraech` an allen vier Zuständen einbinden |
 | `src/Landing.jsx` | Dramaturgie nach Abschnitt 3 |
 | `src/Invite.jsx` | **neu** — Ansicht für eingeladene Personen nach Abschnitt 4 |
