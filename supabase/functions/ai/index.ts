@@ -264,7 +264,7 @@ async function tokenHash(token: string): Promise<string> {
 // in ihren Log-Ausgaben. Im Funktionsrumpf waere das zur Laufzeit zwar
 // unkritisch, aber Nutzung-vor-Deklaration hat hier schon einmal einen
 // Produktionsfehler verursacht (siehe CLAUDE.md) -- also gar nicht erst.
-const VERSION = "2026-08-07g";
+const VERSION = "2026-08-07h";
 
 // ─── Verschluesselung ruhender Inhalte (CLAUDE.md Backlog Punkt 7) ──
 // AES-256-GCM ueber Deno's natives crypto.subtle -- kein externes Paket,
@@ -507,81 +507,6 @@ Deno.serve(async (req) => {
         reports_total: await cnt("reports"),
         mirrors_total: await cnt("mirrors"),
       });
-    }
-
-    // ─── Einmaliger Verschluesselungs-Sweep (Welle 1) ──────────
-    // Verschluesselt Bestandszeilen, die noch Klartext sind. Steht
-    // bewusst VOR dem couple_members-Lookup: das Admin-Konto gehoert zu
-    // keinem Paar-Raum und wuerde dort mit "Kein Paar-Raum." abprallen
-    // (gleicher Grund wie bei admin_stats).
-    //
-    // Doppelt abgesichert (eigenes Secret UND Admin-Konto), weil diese
-    // Aktion als einzige massenhaft an fremden Daten schreibt.
-    //
-    // Idempotent ohne eigenes "migriert"-Flag: der zr1-Praefix sagt
-    // selbst, ob eine Zeile schon verschluesselt ist. Ein abgebrochener
-    // Lauf kann einfach erneut gestartet werden.
-    //
-    // Gegen Nebenlaeufigkeit: Das Update ist an den GELESENEN Altwert
-    // gebunden (.eq(spalte, alt)). Schreibt parallel ein regulaerer
-    // Vorgang (updateProfile ist ein Read-Modify-Write ueber einen
-    // minutenlangen Modellaufruf hinweg!), trifft das Update ins Leere
-    // statt frische Daten zu ueberschreiben -- solche Zeilen werden als
-    // "nachtrag_noetig" gezaehlt und beim naechsten Lauf erledigt.
-    if (body.action === "enc_migrate") {
-      if (!Deno.env.get("MIGRATION_SECRET") || body.secret !== Deno.env.get("MIGRATION_SECRET")) {
-        return json({ error: "Kein Zugriff." }, 403);
-      }
-      const { data: adminRow } = await admin.from("admins")
-        .select("user_id").eq("user_id", user.id).maybeSingle();
-      if (!adminRow) return json({ error: "Kein Zugriff." }, 403);
-
-      const trockenlauf = body.trockenlauf !== false; // Standard: nur zaehlen
-      const ZIELE: Array<{ tabelle: string; spalten: string[] }> = [
-        { tabelle: "ai_profiles", spalten: ["profile"] },
-        { tabelle: "chronicle", spalten: ["observation"] },
-        { tabelle: "reports", spalten: ["notizen"] },
-        { tabelle: "mirrors", spalten: ["notizen"] },
-      ];
-
-      const bericht: Record<string, unknown> = {};
-      for (const { tabelle, spalten } of ZIELE) {
-        // ai_profiles hat keinen eigenen id-Schluessel, sondern
-        // (couple_id, user_id) -- deshalb je Tabelle der passende Filter.
-        const schluessel = tabelle === "ai_profiles" ? ["couple_id", "user_id"] : ["id"];
-        const { data: zeilen, error } = await admin.from(tabelle)
-          .select([...schluessel, ...spalten].join(", "));
-        if (error) { bericht[tabelle] = { fehler: error.message }; continue; }
-
-        let verarbeitet = 0, uebersprungen = 0, nachtragNoetig = 0, fehlgeschlagen = 0;
-        for (const zeile of zeilen ?? []) {
-          const aenderung: Record<string, string | null> = {};
-          let brauchtUpdate = false;
-          for (const sp of spalten) {
-            const alt = (zeile as Record<string, unknown>)[sp];
-            if (alt == null || alt === "") continue;
-            if (typeof alt !== "string") continue;
-            if (istVerschluesselt(alt)) continue; // schon erledigt
-            aenderung[sp] = await verschluesseln(alt);
-            brauchtUpdate = true;
-          }
-          if (!brauchtUpdate) { uebersprungen++; continue; }
-          if (trockenlauf) { verarbeitet++; continue; }
-
-          // Alle Spalten dieser Zeile in EINEM Update -- kein Teilzustand.
-          let q = admin.from(tabelle).update(aenderung);
-          for (const k of schluessel) q = q.eq(k, (zeile as Record<string, unknown>)[k]);
-          for (const sp of Object.keys(aenderung)) {
-            q = q.eq(sp, (zeile as Record<string, unknown>)[sp] as string);
-          }
-          const { data: getroffen, error: updErr } = await q.select(schluessel[0]);
-          if (updErr) { fehlgeschlagen++; console.error(`[ai ${VERSION}] enc_migrate ${tabelle}: ${updErr.message}`); continue; }
-          if (!getroffen || getroffen.length === 0) { nachtragNoetig++; continue; }
-          verarbeitet++;
-        }
-        bericht[tabelle] = { gesamt: (zeilen ?? []).length, verarbeitet, uebersprungen, nachtrag_noetig: nachtragNoetig, fehlgeschlagen };
-      }
-      return json({ ok: true, trockenlauf, bericht });
     }
 
     // ─── Nachverifikation: wie viel ist noch Klartext? ─────────

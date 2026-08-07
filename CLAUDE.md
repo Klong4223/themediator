@@ -96,9 +96,23 @@ Begründung: `KONZEPT.md`.
 - `doc_chats` (verankerte private Gespräche zu Bericht/Spiegel, `kind`+`doc_id`)
 - `chat_messages` (sender_id NULL = KI, `origin` = Herkunft bei getragenen
   Eröffnungen, z.B. `doc_chat:report`), `couple_state` (gate_open)
+- `chronicle` (dauerhafte, abstrahierte Beobachtungen — Langzeitgedächtnis)
 - `device_locks` (PIN-Hash+Salt fuer den Wiedereinstiegs-Schutz, RLS aktiv
   mit **null** Policies — nur die Edge Function per Service Role kommt ran)
 - `email_events`, `admins`
+
+**Verschlüsselte Spalten (seit 07.08.2026):** `ai_profiles.profile`,
+`chronicle.observation`, `reports.notizen`, `mirrors.notizen`. Nur die Edge
+Function kann sie lesen (`CONTENT_ENC_KEY`). Wer eine dieser Spalten im
+Frontend braucht, muss über eine Aktion gehen — ein Direktzugriff per RLS
+liefert Ciphertext. **Dauerhafte Folge:** auf verschlüsselten Spalten sind
+`like`/Volltextsuche, Sortierung und SQL-seitige Aggregation nicht mehr
+möglich. Bei neuen Features mitdenken.
+
+`reports.notizen`/`mirrors.notizen` sind zusätzlich per Spalten-Grant für
+Clients gesperrt (siehe Delta `2026-08-07c` in `schema.sql`) — die
+RLS-Policy auf `reports` gilt zeilenweise und hätte den Partnern sonst die
+internen Analysenotizen offengelegt.
 
 **RLS-Prinzip:** Eigene Inhalte nur für sich selbst lesbar. Partner-Profile,
 -Chroniken und -Gespräche sind für Clients gar nicht zugänglich — nur die
@@ -110,7 +124,16 @@ Edge Function (Service Role) liest sie.
 `probe`, `probe_answer`, `gate`, `chat`, `report`, `report_poll`, `mirror`,
 `mirror_poll`, `doc_chat`, `doc_chat_share`, `meilensteine`, `notify`,
 `daily_digest`, `lock_status`, `lock_set`, `lock_remove`, `lock_verify`,
-`lock_reset_request`, `lock_reset_confirm`, `delete_account`, `admin_stats`
+`lock_reset_request`, `lock_reset_confirm`, `about_you_get`, `enc_status`,
+`delete_account`, `admin_stats`
+
+`about_you_get` liefert Fragebogen, Profil und Chronik entschlüsselt (der
+frühere Direktzugriff in `AboutYou.jsx` zeigte nach Welle 1 Ciphertext).
+`enc_status` ist ein Admin-Diagnosewerkzeug: zählt je Spalte, wie viel noch
+Klartext ist — liefert nur Zahlen, nie Inhalte.
+
+**Secrets:** `OPENAI_API_KEY`, `RESEND_API_KEY`, `CONTENT_ENC_KEY`
+(Verschlüsselung, siehe Backlog 7), optional `CRON_SECRET`.
 
 Beziehungsbild und Spiegel laufen seit 07.08.2026 über OpenAIs Responses-API
 mit `background: true` (`starteHintergrundantwort`/`holeHintergrundantwort`):
@@ -238,11 +261,28 @@ Reihenfolge immer: SQL → Edge Function → Frontend.
    Tabelle), falscher Code, abgelaufener Link, erfolgreicher Rücksetzvorgang
    über die echte UI, Replay desselben Links (schlägt danach fehl, weil die
    Zeile schon gelöscht ist) — danach wieder rückstandsfrei aufgeräumt.
-7. **Verschlüsselung der Inhalte in der Datenbank** — als Letztes. Ziel:
-   Schutz gegen Datenbank-Leaks und versehentliches Mitlesen im Table Editor.
-   Schlüssel als Edge-Function-Secret. Klar kommunizierte Grenze: schützt nicht
-   gegen den entschlossenen Betreiber; echte Nulleinsicht ginge nur
-   clientseitig. Migration bestehender Daten nötig — vorher Backup.
+7. **Verschlüsselung der Inhalte in der Datenbank** — in drei Wellen, weil
+   ein einziger Deploy sonst Krypto-Risiko und Autorisierungs-Risiko
+   vermischt und man bei einem Fehler nicht mehr weiß, welches davon.
+   **Welle 1 ist fertig (07.08.2026):** `ai_profiles.profile`,
+   `chronicle.observation`, `reports.notizen`, `mirrors.notizen` —
+   die vier Spalten mit dem dichtesten Wissen über beide Menschen.
+   AES-256-GCM, Schlüssel nur als Secret `CONTENT_ENC_KEY`, nie in
+   Postgres. Format `zr1:<Fingerprint>:<IV>:<Ciphertext>`; alles ohne
+   `zr1:` gilt als Alt-Klartext und wird durchgereicht, deshalb war der
+   Code-Deploy für sich allein schon unschädlich. Bestandsdaten migriert
+   und gegen das Backup zeichengenau verifiziert (24/24 identisch).
+   ~~Welle 2~~ (noch offen): `diary_entries`, `diary_replies`,
+   `conflicts`, `chat_messages`, `reports.content`, `mirrors.content`,
+   `probes`, `doc_chats` — braucht neun neue Server-Aktionen, weil das
+   Frontend diese Tabellen heute direkt per RLS liest.
+   ~~Welle 3~~ (noch offen): `assessments` (`answers`/`followups`), über
+   additive `*_enc`-Spalten statt Typwechsel.
+   **Ehrliche Grenze, so auch nach außen formulieren:** schützt gegen
+   Table Editor, SQL-Zugriff und Datenbank-Lecks — *nicht* gegen den
+   Betreiber, weil die KI die Rohtexte zwangsläufig im Klartext
+   verarbeitet. Absolute Nulleinsicht ginge nur clientseitig.
+   Plan mit allen Details: `C:\Users\Peter\.claude\plans\moonlit-meandering-steele.md`
 
 ## Bekannte Grenzen
 
