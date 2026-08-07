@@ -13,6 +13,9 @@ export default function Diary({ membership }) {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  // Backlog Punkt 3/4: der Ladehinweis gehoert dorthin, wo die Antwort
+  // erscheint (der neue Eintrag selbst), nicht ans Eingabefeld daneben.
+  const [wartend, setWartend] = useState(null);
 
   async function load() {
     const { data } = await supabase
@@ -77,19 +80,22 @@ export default function Diary({ membership }) {
       if (error) throw error;
       entryId = data.id;
       setDraft("");
+      setWartend(entryId);
+      // Sofort neu laden, damit der Eintrag oben in der Liste erscheint --
+      // der Ladehinweis steht dann direkt daran, nicht mehr am Eingabefeld.
+      await load();
     } catch (e) {
       setError("Eintrag konnte nicht gespeichert werden: " + (e?.message || e));
       setBusy(false);
       return;
     }
     try {
-      await load();
       await callAI({ action: "diary", entry_id: entryId });
-      await load();
     } catch (e) {
       setError("Dein Eintrag ist gespeichert, aber die KI-Rückmeldung schlug fehl: " + (e?.message || JSON.stringify(e)));
-      await load();
     }
+    setWartend(null);
+    await load();
     setBusy(false);
   }
 
@@ -109,7 +115,7 @@ export default function Diary({ membership }) {
           placeholder="Was beschäftigt dich gerade?" />
         <div style={{ marginTop: 12 }}>
           <Btn variant="who" role={membership.role} onClick={save} disabled={busy || !draft.trim()}>
-            {busy ? "Zwischenraum liest …" : "Eintrag speichern"}
+            {busy ? "Wird gespeichert …" : "Eintrag speichern"}
           </Btn>
         </div>
       </section>
@@ -133,7 +139,9 @@ export default function Diary({ membership }) {
               placeholder="Deine Antwort …" disabled={probeBusy} />
             <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
               <Btn variant="who" role={membership.role} disabled={probeBusy || !probeDraft.trim()}
-                onClick={() => answerProbe(probes[0].id, probeDraft.trim(), false)}>Antworten</Btn>
+                onClick={() => answerProbe(probes[0].id, probeDraft.trim(), false)}>
+                {probeBusy ? "Wird gespeichert …" : "Antworten"}
+              </Btn>
               <Btn variant="ghost" disabled={probeBusy}
                 onClick={() => answerProbe(probes[0].id, null, true)}>Überspringen</Btn>
               {probes.length > 1 && <span style={{ fontSize: 13, color: C.inkSoft }}>+{probes.length - 1} weitere</span>}
@@ -148,7 +156,11 @@ export default function Diary({ membership }) {
             {new Date(e.created_at).toLocaleString("de-DE", { dateStyle: "medium", timeStyle: "short" })}
           </span>
           <p style={{ ...st.body, whiteSpace: "pre-wrap" }}>{e.content}</p>
-          <AIBlock title="ZWISCHENRAUM" text={e.ai_feedback} />
+          {e.id === wartend ? (
+            <p style={{ ...st.hint, marginTop: 10, fontStyle: "italic" }}>Zwischenraum liest deinen Eintrag …</p>
+          ) : (
+            <AIBlock title="ZWISCHENRAUM" text={e.ai_feedback} />
+          )}
           {(replies[e.id] || []).map((r, i) => (
             r.role === "ai"
               ? <AIBlock key={i} title="ZWISCHENRAUM" text={r.content} />
@@ -163,9 +175,12 @@ export default function Diary({ membership }) {
               <div style={{ marginTop: 8 }}>
                 <Btn variant="who" role={membership.role} disabled={replyBusy === e.id || !(replyDrafts[e.id] || "").trim()}
                   onClick={() => sendReply(e.id)}>
-                  {replyBusy === e.id ? "Zwischenraum antwortet …" : "Antworten"}
+                  {replyBusy === e.id ? "Wird gesendet …" : "Antworten"}
                 </Btn>
               </div>
+              {replyBusy === e.id && (
+                <p style={{ ...st.hint, marginTop: 10, fontStyle: "italic" }}>Zwischenraum liest und antwortet …</p>
+              )}
             </div>
           )}
           {e.thread_closed && (replies[e.id] || []).length > 0 && (

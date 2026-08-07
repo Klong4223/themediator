@@ -19,3 +19,18 @@ export async function callAI(body) {
   if (data && data.error) throw new Error(data.error);
   return data;
 }
+
+// Frontend-Version, hier statt in .env, damit sie im Build landet und ohne
+// Serverkontakt anzeigbar ist. Bei jedem Ausliefern mitziehen.
+export const FRONTEND_VERSION = "2026-08-07";
+
+// Fragt die tatsaechlich deployte Edge-Function-Version ab (Backlog-Punkt 2)
+// -- so ist im Frontend sichtbar, ob ein Update dort schon angekommen ist.
+export async function pingAI() {
+  const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai?ping=1`;
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}` },
+  });
+  if (!res.ok) throw new Error(`Ping fehlgeschlagen (${res.status}).`);
+  return res.json();
+}

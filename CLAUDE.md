@@ -196,12 +196,7 @@ Reihenfolge immer: SQL → Edge Function → Frontend.
    Vorwurf. Stattdessen eine Karte, die den nächsten noch nicht erreichten
    Meilenstein benennt und im Klartext begründet, warum er es noch nicht
    ist. Baut auf dem vorhandenen Muster von `couple_state.readiness` auf.
-6. **Verschlüsselung der Inhalte in der Datenbank** — als Letztes. Ziel:
-   Schutz gegen Datenbank-Leaks und versehentliches Mitlesen im Table Editor.
-   Schlüssel als Edge-Function-Secret. Klar kommunizierte Grenze: schützt nicht
-   gegen den entschlossenen Betreiber; echte Nulleinsicht ginge nur
-   clientseitig. Migration bestehender Daten nötig — vorher Backup.
-7. **Wiedereinstiegs-Schutz für „Dein Raum"** (Idee von Peter, 07.08.2026) —
+6. **Wiedereinstiegs-Schutz für „Dein Raum"** (Idee von Peter, 07.08.2026) —
    PIN oder Biometrie, bevor der private Bereich nach einer Pause erneut
    sichtbar wird. Motivation nicht Kryptografie, sondern die realistischste
    Bedrohung bei einem Paar-Produkt: das entsperrte Handy liegt kurz auf dem
@@ -212,6 +207,11 @@ Reihenfolge immer: SQL → Edge Function → Frontend.
    dem „technisch erzwungen, nicht nur zugesagt"-Versprechen, mit dem sich
    Zwischenraum von anderen Apps absetzt. Ehrlich beschriften als „zusätzliche
    Sperre auf diesem Gerät", nicht als Verschlüsselung.
+7. **Verschlüsselung der Inhalte in der Datenbank** — als Letztes. Ziel:
+   Schutz gegen Datenbank-Leaks und versehentliches Mitlesen im Table Editor.
+   Schlüssel als Edge-Function-Secret. Klar kommunizierte Grenze: schützt nicht
+   gegen den entschlossenen Betreiber; echte Nulleinsicht ginge nur
+   clientseitig. Migration bestehender Daten nötig — vorher Backup.
 
 ## Bekannte Grenzen
 

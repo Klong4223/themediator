@@ -8,6 +8,9 @@ export default function Conflicts({ membership }) {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  // Backlog Punkt 4: der Ladehinweis gehoert an den Eintrag selbst, nicht
+  // nur an den Knopf oben (gleiches Muster wie im Tagebuch, Punkt 3).
+  const [wartend, setWartend] = useState(null);
 
   async function load() {
     const { data } = await supabase
@@ -21,20 +24,29 @@ export default function Conflicts({ membership }) {
   async function save() {
     if (!draft.trim()) return;
     setBusy(true); setError(null);
+    let conflictId = null;
     try {
       const { data, error } = await supabase
         .from("conflicts")
         .insert({ couple_id: membership.couple_id, title: title.trim() || null, content: draft.trim() })
         .select("id").single();
       if (error) throw error;
+      conflictId = data.id;
       setTitle(""); setDraft("");
-      await load();
-      await callAI({ action: "conflict", conflict_id: data.id });
-      await load();
+      setWartend(conflictId);
+      await load(); // erscheint sofort oben, Ladehinweis steht direkt daran
     } catch (e) {
       setError("Fehler: " + (e?.message || JSON.stringify(e)));
-      await load();
+      setBusy(false);
+      return;
     }
+    try {
+      await callAI({ action: "conflict", conflict_id: conflictId });
+    } catch (e) {
+      setError("Dein Eintrag ist gespeichert, aber die Reflexion schlug fehl: " + (e?.message || JSON.stringify(e)));
+    }
+    setWartend(null);
+    await load();
     setBusy(false);
   }
 
@@ -58,7 +70,7 @@ export default function Conflicts({ membership }) {
           placeholder="Was ist passiert — oder was steht grundsätzlich zwischen euch?" />
         <div style={{ marginTop: 12 }}>
           <Btn variant="who" role={membership.role} onClick={save} disabled={busy || !draft.trim()}>
-            {busy ? "Zwischenraum denkt nach …" : "Einreichen"}
+            {busy ? "Wird gespeichert …" : "Einreichen"}
           </Btn>
         </div>
       </section>
@@ -70,7 +82,11 @@ export default function Conflicts({ membership }) {
           </span>
           {k.title && <h2 style={{ ...st.h2, marginTop: 4 }}>{k.title}</h2>}
           <p style={{ ...st.body, whiteSpace: "pre-wrap" }}>{k.content}</p>
-          <AIBlock title="REFLEXION & VERMITTLUNG" text={k.ai_reflection} />
+          {k.id === wartend ? (
+            <p style={{ ...st.hint, marginTop: 10, fontStyle: "italic" }}>Zwischenraum denkt darüber nach …</p>
+          ) : (
+            <AIBlock title="REFLEXION & VERMITTLUNG" text={k.ai_reflection} />
+          )}
         </section>
       ))}
       {items.length === 0 && (

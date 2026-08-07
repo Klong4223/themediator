@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { supabase, callAI } from "../supabase.js";
+import { supabase, callAI, pingAI, FRONTEND_VERSION } from "../supabase.js";
 import { C, st, Btn, ErrorNote } from "../ui.jsx";
 
 export default function Settings({ membership, onChanged }) {
@@ -10,7 +10,31 @@ export default function Settings({ membership, onChanged }) {
       <EmailAendern />
       <PasswortAendern />
       <KontoLoeschen membership={membership} />
+      <Versionsinfo />
     </div>
+  );
+}
+
+/* ─── Versionsinfo (Backlog-Punkt 2) ─────────────────────── */
+function Versionsinfo() {
+  const [edge, setEdge] = useState(undefined);
+
+  useEffect(() => {
+    pingAI().then(setEdge).catch(() => setEdge(null));
+  }, []);
+
+  return (
+    <section style={{ ...st.card, background: C.paper }}>
+      <h2 style={st.h2}>Version</h2>
+      <p style={{ ...st.hint, marginTop: 6 }}>
+        Frontend: <strong>{FRONTEND_VERSION}</strong>
+        <br />
+        Server (Edge Function):{" "}
+        {edge === undefined ? "wird geprüft …" : edge === null ? "nicht erreichbar" : (
+          <strong>{edge.version}</strong>
+        )}
+      </p>
+    </section>
   );
 }
 

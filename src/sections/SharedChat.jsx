@@ -179,11 +179,15 @@ function Chat({ membership }) {
           onKeyDown={(e) => e.key === "Enter" && send()}
           placeholder="Nachricht an euch beide …" />
         <Btn variant="who" role={membership.role} onClick={send}>Senden</Btn>
-        <Btn onClick={moderate} disabled={busy}>{busy ? "…" : "Moderieren"}</Btn>
+        <Btn onClick={moderate} disabled={busy}>{busy ? "Wird moderiert …" : "Moderieren"}</Btn>
       </div>
-      <p style={st.hint}>
-        Zwischenraum liest mit. »Moderieren« holt eine neutrale Einordnung — bei Eskalation greift sie von selbst ein.
-      </p>
+      {busy ? (
+        <p style={{ ...st.hint, fontStyle: "italic" }}>Zwischenraum liest euren Verlauf und moderiert …</p>
+      ) : (
+        <p style={st.hint}>
+          Zwischenraum liest mit. »Moderieren« holt eine neutrale Einordnung — bei Eskalation greift sie von selbst ein.
+        </p>
+      )}
     </div>
   );
 }

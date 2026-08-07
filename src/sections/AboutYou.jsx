@@ -331,8 +331,9 @@ function Interview({ membership, followups, nextIdx, busy, error, onAnswer }) {
         <div style={{ marginTop: 10 }}>
           <Btn variant="who" role={membership.role} disabled={busy || !draft.trim()}
             onClick={() => { onAnswer(nextIdx, draft.trim()); setDraft(""); }}>
-            {busy ? "…" : nextIdx + 1 === followups.length ? "Antworten & abschließen" : "Antworten"}
+            {busy ? "Wird verarbeitet …" : nextIdx + 1 === followups.length ? "Antworten & abschließen" : "Antworten"}
           </Btn>
+          {busy && <p style={{ ...st.hint, marginTop: 8, fontStyle: "italic" }}>Zwischenraum liest deine Antwort …</p>}
         </div>
       </section>
     </div>
