@@ -264,7 +264,7 @@ async function tokenHash(token: string): Promise<string> {
 // in ihren Log-Ausgaben. Im Funktionsrumpf waere das zur Laufzeit zwar
 // unkritisch, aber Nutzung-vor-Deklaration hat hier schon einmal einen
 // Produktionsfehler verursacht (siehe CLAUDE.md) -- also gar nicht erst.
-const VERSION = "2026-08-07p";
+const VERSION = "2026-08-07r";
 
 // ─── Verschluesselung ruhender Inhalte (CLAUDE.md Backlog Punkt 7) ──
 // AES-256-GCM ueber Deno's natives crypto.subtle -- kein externes Paket,
@@ -1680,7 +1680,14 @@ Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","..."]}`, 900);
 
     // ─── Tageszusammenfassung (per Cron aufgerufen) ─────────
     if (body.action === "daily_digest") {
-      if (body.secret !== Deno.env.get("CRON_SECRET")) return json({ error: "Kein Zugriff." }, 403);
+      // Das fehlende !Deno.env.get(...) davor war eine echte Luecke: ist
+      // CRON_SECRET nicht gesetzt, liefert env.get undefined -- und ein
+      // Aufruf ohne "secret" ergibt undefined !== undefined, also false.
+      // Die Sperre griff dann NICHT, und jede angemeldete Person konnte
+      // die Tageszusammenfassung an alle ausloesen.
+      if (!Deno.env.get("CRON_SECRET") || body.secret !== Deno.env.get("CRON_SECRET")) {
+        return json({ error: "Kein Zugriff." }, 403);
+      }
       const { data: pending } = await admin.from("email_events")
         .select("id, recipient_id, kind").eq("included_in_daily", false)
         .order("created_at", { ascending: true }).limit(500);
@@ -1698,9 +1705,11 @@ Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","..."]}`, 900);
           const { data: u } = await admin.auth.admin.getUserById(uid);
           const to = u?.user?.email;
           if (to) {
-            const zeilen = [...agg.kinds].map((k) => "- " + textFor(k)).join("\n");
-            await sendMail(to, "Es gibt Neues bei Zwischenraum",
-              `In eurem Zwischenraum hat sich etwas getan:\n\n${zeilen}`);
+            await sendMail(to, "Es gibt Neues bei Zwischenraum", {
+              intro: "In eurem Zwischenraum hat sich etwas getan:",
+              punkte: [...agg.kinds].map((k) => textFor(k)),
+              linkText: "Zu Zwischenraum",
+            });
             sent++;
           }
         }
@@ -1774,15 +1783,15 @@ Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","..."]}`, 900);
         reset_token_hash: hash, reset_expires: ablauf,
       }).eq("user_id", user.id);
       if (user.email) {
-        await sendMail(
-          user.email,
-          "Sperre zurücksetzen",
-          "Du hast angefragt, deine Sperre für \"Dein Raum\" bei Zwischenraum zurückzusetzen. " +
-          "Der folgende Link ist 30 Minuten gültig und entfernt deinen bisherigen PIN -- " +
-          "danach kannst du in den Einstellungen einen neuen einrichten. " +
-          "Wenn du das nicht warst, ignoriere diese Nachricht: Ohne Klick ändert sich nichts.",
-          `${APP_URL}/?pin_reset=${token}`,
-        );
+        await sendMail(user.email, "Sperre zurücksetzen", {
+          intro: "Du hast angefragt, deine Sperre für „Dein Raum“ zurückzusetzen. " +
+            "Der Link unten ist 30 Minuten gültig und entfernt deinen bisherigen PIN — " +
+            "danach kannst du in den Einstellungen einen neuen einrichten.",
+          linkText: "Sperre jetzt entfernen",
+          link: `${APP_URL}/?pin_reset=${token}`,
+          hinweis: "Wenn du das nicht warst, ignoriere diese Nachricht einfach. " +
+            "Ohne Klick auf den Link ändert sich nichts.",
+        });
       }
       return json({ ok: true });
     }
@@ -2123,7 +2132,15 @@ async function benachrichtigeBeiFreigabe(
   if (send) {
     const { data: pu } = await admin.auth.admin.getUserById(empfaengerId);
     const to = pu?.user?.email;
-    if (to) await sendMail(to, betreff(kind), textFor(kind));
+    if (to) {
+      await sendMail(to, betreff(kind), {
+        intro: textFor(kind),
+        linkText: kind === "report" ? "Beziehungsbild ansehen"
+          : kind === "mirror" ? "Spiegel ansehen"
+          : kind === "chat" ? "Zum gemeinsamen Raum"
+          : "Zu Zwischenraum",
+      });
+    }
   }
   await admin.from("email_events").insert({
     couple_id: coupleId, recipient_id: empfaengerId, kind, sent_instant: send, included_in_daily: send,
@@ -2131,14 +2148,132 @@ async function benachrichtigeBeiFreigabe(
   return send;
 }
 
-async function sendMail(to: string, subject: string, body: string, link: string = APP_URL) {
+// ─── E-Mail-Gestaltung ───────────────────────────────────────
+// Text- und HTML-Fassung entstehen aus DERSELBEN Quelle -- zwei getrennt
+// gepflegte Vorlagen laufen sonst frueher oder spaeter auseinander.
+//
+// Bewusst ohne externe Bilder, ohne Zaehlpixel, ohne Web-Fonts: das
+// Versprechen "kein Tracking" gilt auch hier, und jede entfernte Ressource
+// waere ein Rueckkanal, der verraet, wann jemand die Mail oeffnet.
+// Deshalb reine Systemschriften -- Georgia als Serife trifft den Charakter
+// von Fraunces nah genug.
+//
+// Tabellen-Layout und Inline-Styles, weil Outlook nichts anderes
+// zuverlaessig darstellt. Die Farben stammen aus ui.jsx.
+
+const M = {
+  paper: "#F5F6F3", card: "#FFFFFF", ink: "#232B38",
+  inkSoft: "#5A6472", line: "#E3E6E0", akzent: "#B07C2E",
+};
+
+function htmlEscape(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+type MailInhalt = {
+  intro: string;
+  punkte?: string[];
+  linkText?: string;
+  link?: string;
+  hinweis?: string;   // kleiner Zusatzabsatz unter dem Knopf
+};
+
+function mailText(i: MailInhalt): string {
+  const teile = [i.intro];
+  if (i.punkte?.length) teile.push(i.punkte.map((p) => `- ${p}`).join("\n"));
+  teile.push(`${i.linkText ?? "Hier geht es weiter"}: ${i.link ?? APP_URL}`);
+  if (i.hinweis) teile.push(i.hinweis);
+  teile.push(
+    `--\nDu bekommst diese Nachricht, weil du Zwischenraum nutzt.\n` +
+    `Häufigkeit ändern oder abbestellen: ${APP_URL} (Einstellungen ⚙ > Benachrichtigungen)\n` +
+    `Aus Datenschutzgründen stehen in unseren E-Mails niemals Inhalte.`,
+  );
+  return teile.join("\n\n");
+}
+
+function mailHtml(betreffZeile: string, i: MailInhalt): string {
+  const punkteHtml = (i.punkte?.length)
+    ? `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:18px 0 4px;">
+${i.punkte.map((p) => `<tr>
+  <td valign="top" style="width:18px;padding:0 0 10px;color:${M.akzent};font-size:15px;line-height:1.6;">&bull;</td>
+  <td style="padding:0 0 10px;color:${M.ink};font-size:15px;line-height:1.6;">${htmlEscape(p)}</td>
+</tr>`).join("\n")}
+</table>`
+    : "";
+
+  const knopf = `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:22px 0 4px;">
+  <tr><td style="background:${M.ink};border-radius:10px;">
+    <a href="${htmlEscape(i.link ?? APP_URL)}" style="display:inline-block;padding:12px 26px;color:#ffffff;font-size:15px;font-weight:600;text-decoration:none;font-family:'Source Sans 3',-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">${htmlEscape(i.linkText ?? "Zu Zwischenraum")}</a>
+  </td></tr>
+</table>`;
+
+  const hinweisHtml = i.hinweis
+    ? `<p style="margin:16px 0 0;color:${M.inkSoft};font-size:13.5px;line-height:1.55;">${htmlEscape(i.hinweis)}</p>`
+    : "";
+
+  return `<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="supported-color-schemes" content="light dark">
+<title>${htmlEscape(betreffZeile)}</title>
+<style>
+  @media (prefers-color-scheme: dark) {
+    .zr-huelle { background:#1A1F27 !important; }
+    .zr-karte  { background:#232B38 !important; border-color:#39414F !important; }
+    .zr-text, .zr-titel { color:#ECEFF3 !important; }
+    .zr-leise  { color:#A9B2BE !important; }
+    .zr-knopf a { background:#ECEFF3 !important; color:#232B38 !important; }
+  }
+  @media (max-width:620px) {
+    .zr-karte { padding:24px 20px !important; }
+  }
+</style>
+</head>
+<body class="zr-huelle" style="margin:0;padding:0;background:${M.paper};">
+<!-- Vorschautext, in der Mail selbst unsichtbar -->
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;">${htmlEscape(i.intro)}</div>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:${M.paper};">
+<tr><td align="center" style="padding:28px 14px 40px;">
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:560px;">
+    <tr><td style="padding:0 0 14px;">
+      <span class="zr-titel" style="font-family:Georgia,'Times New Roman',serif;font-size:19px;font-weight:600;color:${M.ink};letter-spacing:-0.01em;">Zwischenraum</span>
+    </td></tr>
+    <tr><td class="zr-karte" style="background:${M.card};border:1px solid ${M.line};border-radius:14px;padding:28px 30px;">
+      <h1 class="zr-titel" style="margin:0 0 12px;font-family:Georgia,'Times New Roman',serif;font-size:22px;font-weight:600;color:${M.ink};line-height:1.3;letter-spacing:-0.01em;">${htmlEscape(betreffZeile)}</h1>
+      <p class="zr-text" style="margin:0;color:${M.ink};font-size:15px;line-height:1.65;font-family:'Source Sans 3',-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">${htmlEscape(i.intro)}</p>
+      ${punkteHtml}
+      <div class="zr-knopf">${knopf}</div>
+      ${hinweisHtml}
+    </td></tr>
+    <tr><td style="padding:18px 4px 0;">
+      <p class="zr-leise" style="margin:0;color:${M.inkSoft};font-size:12.5px;line-height:1.6;font-family:'Source Sans 3',-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
+        Du bekommst diese Nachricht, weil du Zwischenraum nutzt.<br>
+        Häufigkeit ändern oder abbestellen: <a href="${APP_URL}" style="color:${M.inkSoft};">zwischenraum.work</a> &rsaquo; Einstellungen &#9881; &rsaquo; Benachrichtigungen<br>
+        <strong style="font-weight:600;">Aus Datenschutzgründen stehen in unseren E-Mails niemals Inhalte.</strong>
+      </p>
+    </td></tr>
+  </table>
+</td></tr>
+</table>
+</body>
+</html>`;
+}
+
+async function sendMail(to: string, subject: string, inhalt: MailInhalt) {
   const key = Deno.env.get("RESEND_API_KEY");
   if (!key) { console.error("RESEND_API_KEY fehlt - keine Mail versendet."); return; }
-  const text = `${body}\n\nHier geht es weiter: ${link}\n\n--\nDu bekommst diese Nachricht, weil du Zwischenraum nutzt.\nHäufigkeit ändern oder abbestellen: ${APP_URL} (Bereich "Über dich" > Benachrichtigungen)\nAus Datenschutzgründen stehen in unseren E-Mails niemals Inhalte.`;
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: { "content-type": "application/json", "authorization": `Bearer ${key}` },
-    body: JSON.stringify({ from: MAIL_FROM, to, subject, text }),
+    body: JSON.stringify({
+      from: MAIL_FROM, to, subject,
+      text: mailText(inhalt),
+      html: mailHtml(subject, inhalt),
+    }),
   });
   if (!res.ok) console.error(`Resend ${res.status}: ${await res.text()}`);
 }
