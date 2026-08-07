@@ -5,6 +5,8 @@ import Diary from "./sections/Diary.jsx";
 import Conflicts from "./sections/Conflicts.jsx";
 import SharedChat from "./sections/SharedChat.jsx";
 import AboutYou from "./sections/AboutYou.jsx";
+import Spiegel from "./sections/Spiegel.jsx";
+import BeziehungsbildGespraech from "./sections/BeziehungsbildGespraech.jsx";
 import Report from "./sections/Report.jsx";
 import Landing from "./Landing.jsx";
 import Invite from "./Invite.jsx";
@@ -316,10 +318,16 @@ function Main({ session, membership }) {
     ["zwischenraum", "Der Zwischenraum", C.ink],
     ["euer", gateOpen ? "Euer Raum" : "Euer Raum 🔒", C.b],
   ];
+  // Spiegel und Beziehungsbild-Gespraech waren bis 07.08.2026 unter
+  // "Ueber dich" mit eingehaengt. Dort standen dann Fragebogen, Profil,
+  // Chronik, Spiegel UND das Berichtsgespraech untereinander -- zu viel
+  // fuer eine Seite. Jetzt eigene Reiter, inhaltlich unveraendert.
   const deinTabs = [
     ["tagebuch", "Tagebuch"],
     ["ueber_dich", "Über dich"],
     ["konflikte", "Themen & Konflikte"],
+    ["spiegel", "Dein Spiegel"],
+    ["bild_gespraech", "Beziehungsbild"],
   ];
 
   return (
@@ -397,8 +405,10 @@ function Main({ session, membership }) {
       {raum === "dein" && deinBereit && !deinGesperrt && deinTab === "tagebuch" && <Diary membership={membership} />}
       {raum === "dein" && deinBereit && !deinGesperrt && deinTab === "ueber_dich" && <AboutYou membership={membership} />}
       {raum === "dein" && deinBereit && !deinGesperrt && deinTab === "konflikte" && <Conflicts membership={membership} />}
+      {raum === "dein" && deinBereit && !deinGesperrt && deinTab === "spiegel" && <Spiegel membership={membership} />}
+      {raum === "dein" && deinBereit && !deinGesperrt && deinTab === "bild_gespraech" && <BeziehungsbildGespraech membership={membership} />}
       {raum === "zwischenraum" && (
-        <Report membership={membership} onGespraech={() => { setRaum("dein"); setDeinTab("ueber_dich"); }} />
+        <Report membership={membership} onGespraech={() => { setRaum("dein"); setDeinTab("bild_gespraech"); }} />
       )}
       {raum === "euer" && <SharedChat membership={membership} state={state} refreshState={loadState} />}
       {raum === "einstellungen" && (

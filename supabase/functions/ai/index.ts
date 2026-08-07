@@ -264,7 +264,7 @@ async function tokenHash(token: string): Promise<string> {
 // in ihren Log-Ausgaben. Im Funktionsrumpf waere das zur Laufzeit zwar
 // unkritisch, aber Nutzung-vor-Deklaration hat hier schon einmal einen
 // Produktionsfehler verursacht (siehe CLAUDE.md) -- also gar nicht erst.
-const VERSION = "2026-08-07o";
+const VERSION = "2026-08-07p";
 
 // ─── Verschluesselung ruhender Inhalte (CLAUDE.md Backlog Punkt 7) ──
 // AES-256-GCM ueber Deno's natives crypto.subtle -- kein externes Paket,
@@ -1444,6 +1444,30 @@ Antworte nur mit dem Spiegel-Text.`;
       });
     }
 
+    // ─── Verankertes Gespraech ins Gesamtbild verdichten ───────
+    // Was jemand ueber sein Beziehungsbild oder seinen Spiegel sagt,
+    // gehoert zum Bild, das Zwischenraum von dieser Person hat -- sonst
+    // waeren diese Gespraeche ein blinder Fleck. Sie liefen bisher als
+    // einzige Textquelle NICHT ins Profil zurueck.
+    //
+    // WICHTIG (Regel 1): Verdichtet werden ausschliesslich die eigenen
+    // Beitraege der Person, nie die Antworten von Zwischenraum. Gerade
+    // beim Beziehungsbild beschreibt der Ausgangstext BEIDE Menschen;
+    // wuerde man den Dialog komplett einarbeiten, sickerten Aussagen
+    // ueber die andere Person ins Profil dieser Person und koennten
+    // spaeter als vermeintlich eigenes Material zurueckkommen.
+    //
+    // Laeuft als eigene Aktion statt inline in doc_chat: updateProfile
+    // braucht zwei Modellaufrufe und damit rund eine Minute -- inline
+    // wuerde jede Chat-Antwort entsprechend spaeter erscheinen. Das
+    // Frontend stoesst diese Aktion ohne Warten an.
+    if (body.action === "doc_chat_verdichten") {
+      const docId = String(body.doc_id ?? "");
+      if (!docId) return json({ error: "Kein Dokument angegeben." }, 400);
+      const anzahl = await verdichteOffeneGespraeche(admin, member.couple_id, user.id, docId);
+      return json({ ok: true, verdichtet: anzahl });
+    }
+
     // ─── Verankertes Gespraech zu Beziehungsbild oder Spiegel ─
     // KONZEPT.md 7.2/7.3. Kontext bewusst OHNE Material der anderen Person
     // (auch beim Spiegel nicht, obwohl der Spiegel selbst welches als Linse
@@ -1529,6 +1553,10 @@ Antworte nur mit deiner Nachricht.`;
           couple_id: member.couple_id, user_id: user.id, kind, doc_id: docId,
           sender: "ai", content: await verschluesseln(antwort),
         });
+        // Die eben gespeicherte Nachricht ist bewusst noch offen -- sie
+        // wird verdichtet, wenn das Frontend gleich doc_chat_verdichten
+        // anstoesst (oder spaetestens beim naechsten Beitrag, falls
+        // dieser Anstoss verloren geht).
         return json({ ok: true, antwort });
       } catch (e) {
         // Die Nachricht der Person ist bereits gespeichert (siehe oben) --
@@ -1946,6 +1974,53 @@ async function getProfile(admin: ReturnType<typeof createClient>, coupleId: stri
 }
 
 // Profil laufend verdichten: die Abstraktionsschicht, die Rohtext von der anderen Seite fernhaelt.
+// Arbeitet die noch nicht verdichteten EIGENEN Beitraege eines
+// verankerten Gespraechs ins Profil und die Chronik ein.
+//
+// Nur sender = "user": die Antworten von Zwischenraum bleiben draussen.
+// Beim Beziehungsbild beschreibt der Ausgangstext beide Menschen, und
+// die Antworten greifen ihn auf -- wuerde man sie mit einarbeiten,
+// landeten Aussagen ueber die andere Person im Profil dieser Person.
+// Was jemand selbst schreibt, gehoert dagegen zweifelsfrei ihm.
+//
+// Gibt die Zahl der eingearbeiteten Beitraege zurueck. Ohne offene
+// Beitraege passiert nichts (kein Modellaufruf).
+async function verdichteOffeneGespraeche(
+  admin: ReturnType<typeof createClient>,
+  coupleId: string, userId: string, docId: string,
+): Promise<number> {
+  const { data: offen } = await admin.from("doc_chats")
+    .select("id, kind, content")
+    .eq("doc_id", docId).eq("user_id", userId)
+    .eq("sender", "user").eq("verdichtet", false)
+    .order("created_at", { ascending: true });
+  if (!offen?.length) return 0;
+
+  const texte = await Promise.all(offen.map(async (m) =>
+    await entschluesselnTolerant(m.content, `doc_chats.content id=${m.id}`)));
+  const brauchbar = texte.filter((t) => t && !t.startsWith("["));
+  if (!brauchbar.length) {
+    // Nur unlesbare Zeilen -- trotzdem abhaken, sonst bleiben sie ewig
+    // liegen und werden bei jedem Anlauf erneut versucht.
+    await admin.from("doc_chats").update({ verdichtet: true })
+      .in("id", offen.map((m) => m.id));
+    return 0;
+  }
+
+  const art = offen[0].kind === "report"
+    ? "das gemeinsame Beziehungsbild"
+    : "den eigenen Spiegel";
+  const aktuell = await getProfile(admin, coupleId, userId);
+  await updateProfile(admin, coupleId, userId, aktuell,
+    `Eigene Aeusserungen der Person im Gespraech ueber ${art} ` +
+    `(nur ihre eigenen Beitraege, nicht die Antworten von Zwischenraum):\n` +
+    brauchbar.map((t) => `- ${t}`).join("\n"));
+
+  await admin.from("doc_chats").update({ verdichtet: true })
+    .in("id", offen.map((m) => m.id));
+  return brauchbar.length;
+}
+
 async function updateProfile(
   admin: ReturnType<typeof createClient>,
   coupleId: string, userId: string, current: string, newInfo: string,

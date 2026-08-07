@@ -66,10 +66,10 @@ src/
   sections/
     Diary.jsx           Tagebuch, Dialog-Fäden, "Zwischenraum fragt" (Dein Raum)
     Conflicts.jsx       Themen & Konflikte (Dein Raum)
-    AboutYou.jsx        Fragebogen, KI-Interview, Profil, Chronik + Spiegel (Dein Raum)
-    Spiegel.jsx         Consent, Polling, Generierung, DocChat — in AboutYou.jsx eingebunden
+    AboutYou.jsx        Fragebogen, KI-Interview, Profil, Chronik (Dein Raum)
+    Spiegel.jsx         Consent, Polling, Generierung, DocChat — eigener Reiter (Dein Raum)
     Report.jsx          Beziehungsbild + "Der nächste Schritt" (Der Zwischenraum)
-    BeziehungsbildGespraech.jsx  Gespräch zu fertigen Berichten, in AboutYou.jsx (Dein Raum)
+    BeziehungsbildGespraech.jsx  Gespräch zu fertigen Berichten — eigener Reiter (Dein Raum)
     NaechsterSchritt.jsx  Meilenstein-Karte, gespeist aus der meilensteine-Aktion
     DocChat.jsx          Verankerter Gesprächsfaden zu Bericht/Spiegel (privat)
     SharedChat.jsx       Gate + moderierter gemeinsamer Chat (Euer Raum)
@@ -81,8 +81,9 @@ supabase/
 ```
 
 **Navigation (App.jsx, seit 07.08.2026):** drei Räume statt einzelner Tabs —
-„Dein Raum" (Unter-Navigation: Tagebuch/Über dich/Themen & Konflikte),
-„Der Zwischenraum" (Beziehungsbild), „Euer Raum" (gemeinsamer Chat).
+„Dein Raum" (Unter-Navigation: Tagebuch / Über dich / Themen & Konflikte /
+Dein Spiegel / Beziehungsbild), „Der Zwischenraum" (Beziehungsbild),
+„Euer Raum" (gemeinsamer Chat).
 Einstellungen ist Utility, kein Raum, eigenes Zahnrad-Icon. Details und
 Begründung: `KONZEPT.md`.
 
@@ -144,7 +145,8 @@ läuft über die Edge Function.
 `daily_digest`, `lock_status`, `lock_set`, `lock_remove`, `lock_verify`,
 `lock_reset_request`, `lock_reset_confirm`, `about_you_get`, `diary_list`,
 `conflicts_list`, `chat_list`, `chat_send`, `reports_list`, `mirrors_list`,
-`doc_chat_list`, `assessment_skip`, `enc_status`, `delete_account`, `admin_stats`
+`doc_chat_list`, `doc_chat_verdichten`, `assessment_skip`, `enc_status`,
+`delete_account`, `admin_stats`
 
 Die `*_list`-Aktionen und `chat_send` sind mit der Verschlüsselung
 entstanden: sie ersetzen die früheren Direktzugriffe des Frontends und
@@ -165,6 +167,18 @@ nach ein paar Wochen entfallen.
 `about_you_get` liefert Fragebogen, Profil und Chronik entschlüsselt.
 `assessment_skip` setzt nur das Überspringen-Flag — liegt trotzdem hier,
 damit auf `assessments` gar keine Client-Schreibrechte mehr nötig sind.
+
+`doc_chat_verdichten` arbeitet die verankerten Gespräche ins Profil und die
+Chronik ein — sie waren bis 07.08.2026 die einzige Textquelle, die **nicht**
+zurückfloss. Zwei Dinge daran sind bewusst so:
+1. **Nur die eigenen Beiträge**, nie die Antworten von Zwischenraum. Beim
+   Beziehungsbild beschreibt der Ausgangstext beide Menschen; würde man den
+   Dialog komplett einarbeiten, sickerten Aussagen über die andere Person
+   ins Profil dieser Person (Verstoß gegen Regel 1).
+2. **Eigene Aktion statt inline in `doc_chat`**, weil `updateProfile` zwei
+   Modellaufrufe braucht (~1 Minute). `DocChat.jsx` stößt sie nach dem
+   Senden ohne Warten an; geht der Aufruf verloren, holt der nächste
+   Beitrag alles Offene nach (`doc_chats.verdichtet`).
 `enc_status` ist ein Admin-Diagnosewerkzeug: zählt je Spalte, wie viel noch
 Klartext ist — liefert nur Zahlen, nie Inhalte.
 

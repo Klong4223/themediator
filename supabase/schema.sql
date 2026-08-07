@@ -621,3 +621,21 @@ create policy "assessments: nur eigene lesen" on assessments
 -- Senden laeuft ueber die Aktion chat_send, die Gate-Pruefung und
 -- sender_id selbst setzt. Die Insert-Policy ist damit ueberfluessig.
 drop policy if exists "chat: senden bei offenem Gate" on chat_messages;
+
+-- ─────────────────────────────────────────────────────────────
+-- Delta 2026-08-07g: verankerte Gespraeche ins Gesamtbild.
+--
+-- Was jemand ueber sein Beziehungsbild oder seinen Spiegel sagt, floss
+-- bisher als einzige Textquelle NICHT ins Profil/die Chronik zurueck --
+-- diese Gespraeche waren ein blinder Fleck. Diese Spalte merkt, welche
+-- Beitraege schon eingearbeitet sind; ohne sie wuerde jede Verdichtung
+-- denselben Verlauf erneut einarbeiten und das Profil aufblaehen.
+--
+-- Verdichtet werden ausschliesslich Beitraege mit sender = 'user'
+-- (siehe verdichteOffeneGespraeche in der Edge Function).
+-- ─────────────────────────────────────────────────────────────
+
+alter table doc_chats add column if not exists verdichtet boolean not null default false;
+
+create index if not exists doc_chats_offen_idx
+  on doc_chats (user_id, verdichtet) where verdichtet = false;

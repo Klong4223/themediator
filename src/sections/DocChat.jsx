@@ -36,6 +36,15 @@ export default function DocChat({ kind, docId, canWrite }) {
   const letzte = messages && messages.length ? messages[messages.length - 1] : null;
   const wartetAufAntwort = letzte?.sender === "user";
 
+  // Stoesst an, dass die eigenen Beitraege ins Profil und die Chronik
+  // einfliessen -- ohne darauf zu warten. Die Verdichtung braucht zwei
+  // Modellaufrufe und damit rund eine Minute; inline wuerde jede Antwort
+  // entsprechend spaeter erscheinen. Geht der Aufruf verloren, holt die
+  // Edge Function es beim naechsten Beitrag nach.
+  function verdichtenAnstossen() {
+    callAI({ action: "doc_chat_verdichten", doc_id: docId }).catch(() => { /* nachgeholt */ });
+  }
+
   async function senden() {
     const text = entwurf.trim();
     if (!text || busy) return;
@@ -46,6 +55,7 @@ export default function DocChat({ kind, docId, canWrite }) {
       // der Entwurf darf jetzt geleert werden, egal ob die KI-Antwort klappte.
       setEntwurf("");
       await load();
+      verdichtenAnstossen();
       if (res?.fehler) setError("Deine Nachricht ist gespeichert. Antwort konnte gerade nicht erzeugt werden: " + res.fehler);
     } catch (e) {
       // Hier NICHT leeren -- die Nachricht kam moeglicherweise nie an.

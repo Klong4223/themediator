@@ -1,8 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { callAI } from "../supabase.js";
 import { C, st, Btn, AIBlock, ErrorNote } from "../ui.jsx";
-import Spiegel from "./Spiegel.jsx";
-import BeziehungsbildGespraech from "./BeziehungsbildGespraech.jsx";
 
 export const QUESTIONS = [
   // Block A — Konflikt & Bindung
@@ -132,8 +130,6 @@ export default function AboutYou({ membership }) {
           <p style={{ ...st.body, whiteSpace: "pre-wrap" }}>{profile || "(noch leer — dein erster Tagebucheintrag füllt es)"}</p>
         </section>
         <Chronik eintraege={chronik} role={membership.role} />
-        <Spiegel membership={membership} />
-        <BeziehungsbildGespraech membership={membership} />
       </div>
     );
   }
@@ -174,8 +170,6 @@ export default function AboutYou({ membership }) {
             </>
           )}
         </div>
-        <Spiegel membership={membership} />
-        <BeziehungsbildGespraech membership={membership} />
       </div>
     );
   }
@@ -195,8 +189,6 @@ export default function AboutYou({ membership }) {
             </Btn>
           </div>
         </section>
-        <Spiegel membership={membership} />
-        <BeziehungsbildGespraech membership={membership} />
       </div>
     );
   }
@@ -207,8 +199,6 @@ export default function AboutYou({ membership }) {
       <div style={{ display: "grid", gap: 20 }}>
         <Interview membership={membership} followups={followups} nextIdx={nextIdx}
           busy={busy} error={error} onAnswer={answerFollowup} />
-        <Spiegel membership={membership} />
-        <BeziehungsbildGespraech membership={membership} />
       </div>
     );
   }
@@ -229,8 +219,6 @@ export default function AboutYou({ membership }) {
         <p style={{ ...st.body, whiteSpace: "pre-wrap" }}>{profile || "(noch leer)"}</p>
       </section>
       <Chronik eintraege={chronik} role={membership.role} />
-      <Spiegel membership={membership} />
-      <BeziehungsbildGespraech membership={membership} />
     </div>
   );
 }
