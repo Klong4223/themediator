@@ -39,6 +39,9 @@ export default function AboutYou({ membership }) {
   const [chronik, setChronik] = useState([]);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+  // Auffangnetz fuer einen fehlgeschlagenen Fragebogen-Versand, siehe
+  // submitQuestionnaire.
+  const [letzteAntworten, setLetzteAntworten] = useState(null);
 
   // Laeuft ueber die Edge Function statt direkt per RLS, weil Profil und
   // Chronik in der Datenbank verschluesselt liegen (CLAUDE.md Backlog 7) --
@@ -59,18 +62,26 @@ export default function AboutYou({ membership }) {
   }
   useEffect(() => { load(); }, []);
 
+  // Speichern und Auswerten in einem Aufruf: nur die Edge Function kann
+  // die Antworten verschluesselt ablegen (CLAUDE.md Backlog 7).
+  //
+  // ACHTUNG beim Fehlerfall: Der Wiederholen-Knopf unten reicht
+  // `row.answers` erneut hier hinein. Deshalb liefert about_you_get die
+  // Antworten als geparstes Objekt zurueck, nie als String -- sonst
+  // wuerde beim zweiten Versuch doppelt JSON-kodiert.
   async function submitQuestionnaire(answers) {
     setBusy(true); setError(null);
     try {
-      const { error } = await supabase.from("assessments").upsert({
-        couple_id: membership.couple_id, user_id: membership.user_id,
-        answers, completed: true, updated_at: new Date().toISOString(),
-      });
-      if (error) throw error;
-      await callAI({ action: "assessment" });
+      await callAI({ action: "assessment", answers });
+      setLetzteAntworten(null);
       await load();
     } catch (e) {
-      setError("Auswertung fehlgeschlagen. Deine Antworten sind gesichert — versuche es gleich erneut über den Knopf unten.");
+      // Die Antworten hier festhalten: Speichern und Auswerten sind ein
+      // Aufruf geworden, also ist bei einem Netzfehler moeglicherweise
+      // NICHTS gespeichert. Ohne diese Kopie waere der ausgefuellte
+      // Fragebogen verloren.
+      setLetzteAntworten(answers);
+      setError("Auswertung fehlgeschlagen: " + (e?.message || e));
       await load();
     }
     setBusy(false);
@@ -134,13 +145,35 @@ export default function AboutYou({ membership }) {
       <div style={{ display: "grid", gap: 20 }}>
         <div>
           <ErrorNote>{error}</ErrorNote>
-          <p style={{ ...st.hint, textAlign: "center" }}>
-            Der Fragebogen ist optional — er hilft beim Einstieg, wenn du nicht weißt, wo anfangen.{" "}
-            <button onClick={skip} style={{ background: "none", border: "none", color: C.inkSoft, cursor: "pointer", fontFamily: "inherit", textDecoration: "underline", fontSize: 13.5, padding: 0 }}>
-              Lieber frei schreiben? Überspringen
-            </button>
-          </p>
-          <Wizard membership={membership} busy={busy} onSubmit={submitQuestionnaire} />
+          {letzteAntworten ? (
+            // Der Versand ist gescheitert und moeglicherweise ist nichts
+            // gespeichert. Statt den Fragebogen neu zu verlangen, hier
+            // direkt mit den bereits gegebenen Antworten erneut versuchen.
+            <section style={{ ...st.card, textAlign: "center" }}>
+              <p style={st.body}>
+                Deine Antworten liegen noch hier — es hat nur beim Senden nicht geklappt.
+              </p>
+              <div style={{ marginTop: 12, display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
+                <Btn onClick={() => submitQuestionnaire(letzteAntworten)} disabled={busy}>
+                  {busy ? "Wird gesendet …" : "Noch einmal senden"}
+                </Btn>
+                <Btn variant="ghost" disabled={busy}
+                  onClick={() => { setLetzteAntworten(null); setError(null); }}>
+                  Von vorn ausfüllen
+                </Btn>
+              </div>
+            </section>
+          ) : (
+            <>
+              <p style={{ ...st.hint, textAlign: "center" }}>
+                Der Fragebogen ist optional — er hilft beim Einstieg, wenn du nicht weißt, wo anfangen.{" "}
+                <button onClick={skip} style={{ background: "none", border: "none", color: C.inkSoft, cursor: "pointer", fontFamily: "inherit", textDecoration: "underline", fontSize: 13.5, padding: 0 }}>
+                  Lieber frei schreiben? Überspringen
+                </button>
+              </p>
+              <Wizard membership={membership} busy={busy} onSubmit={submitQuestionnaire} />
+            </>
+          )}
         </div>
         <Spiegel membership={membership} />
         <BeziehungsbildGespraech membership={membership} />

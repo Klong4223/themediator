@@ -101,9 +101,11 @@ Begründung: `KONZEPT.md`.
   mit **null** Policies — nur die Edge Function per Service Role kommt ran)
 - `email_events`, `admins`
 
-**Verschlüsselte Spalten (seit 07.08.2026):** alle Inhaltsspalten außer
-`assessments` — siehe Backlog 7 für die vollständige Liste. Nur die Edge
-Function kann sie lesen (`CONTENT_ENC_KEY`).
+**Verschlüsselte Spalten (seit 07.08.2026):** alle Inhaltsspalten — siehe
+Backlog 7 für die vollständige Liste. Nur die Edge Function kann sie lesen
+(`CONTENT_ENC_KEY`). Beim Fragebogen heißen sie `answers_enc`/
+`followups_enc`; die alten `jsonb`-Spalten `answers`/`followups` sind
+geleert und werden nicht mehr beschrieben.
 
 **Regel für neue Features:** Inhalte werden ausschließlich über
 Edge-Function-Aktionen gelesen und geschrieben. Ein `supabase.from(...)`
@@ -289,21 +291,25 @@ Reihenfolge immer: SQL → Edge Function → Frontend.
 7. **Verschlüsselung der Inhalte in der Datenbank** — in drei Wellen, weil
    ein einziger Deploy sonst Krypto-Risiko und Autorisierungs-Risiko
    vermischt und man bei einem Fehler nicht mehr weiß, welches davon.
-   **Welle 1 und 2 sind fertig (07.08.2026).** Verschlüsselt sind damit
-   alle Inhaltsspalten außer `assessments`: `ai_profiles.profile`,
-   `chronicle.observation`, `reports.notizen`+`content`,
-   `mirrors.notizen`+`content`, `diary_entries.content`+`ai_feedback`,
-   `diary_replies.content`, `conflicts.title`+`content`+`ai_reflection`,
-   `chat_messages.content`, `probes.q`+`a`, `doc_chats.content`.
+   **→ gelöst (07.08.2026), alle drei Wellen.** In der Datenbank steht
+   kein Inhalts-Klartext mehr (per `enc_status` verifiziert):
+   `ai_profiles.profile`, `chronicle.observation`,
+   `reports.notizen`+`content`, `mirrors.notizen`+`content`,
+   `diary_entries.content`+`ai_feedback`, `diary_replies.content`,
+   `conflicts.title`+`content`+`ai_reflection`, `chat_messages.content`,
+   `probes.q`+`a`, `doc_chats.content`, `assessments.answers_enc`+
+   `followups_enc`.
    AES-256-GCM, Schlüssel nur als Secret `CONTENT_ENC_KEY`, nie in
    Postgres. Format `zr1:<Fingerprint>:<IV>:<Ciphertext>`; alles ohne
    `zr1:` gilt als Alt-Klartext und wird durchgereicht, deshalb ist ein
    Code-Deploy für sich allein immer unschädlich. Bestandsdaten migriert
    und gegen ein vorher gezogenes Backup zeichengenau verifiziert
-   (Welle 1: 24/24, Welle 2: 160/160 identisch, kein Klartext übrig).
-   ~~Welle 3~~ (noch offen): `assessments` (`answers`/`followups`), über
-   additive `*_enc`-Spalten statt Typwechsel — als einzige Tabelle noch
-   Klartext.
+   (24/24, 160/160, 9/9 identisch).
+   Bei `assessments` liegen die Werte in **neuen** Spalten `answers_enc`/
+   `followups_enc` (text) statt in den alten `jsonb`-Spalten — ein
+   Typwechsel hätte ein Deploy-Fenster erzeugt, in dem das Speichern
+   entweder scheitert oder still Klartext schreibt. Die alten Spalten
+   sind geleert und können später ersatzlos entfallen.
    **Ehrliche Grenze, so auch nach außen formulieren:** schützt gegen
    Table Editor, SQL-Zugriff und Datenbank-Lecks — *nicht* gegen den
    Betreiber, weil die KI die Rohtexte zwangsläufig im Klartext

@@ -264,7 +264,7 @@ async function tokenHash(token: string): Promise<string> {
 // in ihren Log-Ausgaben. Im Funktionsrumpf waere das zur Laufzeit zwar
 // unkritisch, aber Nutzung-vor-Deklaration hat hier schon einmal einen
 // Produktionsfehler verursacht (siehe CLAUDE.md) -- also gar nicht erst.
-const VERSION = "2026-08-07k";
+const VERSION = "2026-08-07n";
 
 // ─── Verschluesselung ruhender Inhalte (CLAUDE.md Backlog Punkt 7) ──
 // AES-256-GCM ueber Deno's natives crypto.subtle -- kein externes Paket,
@@ -376,6 +376,41 @@ async function entschluesseln(wert: string | null | undefined): Promise<string |
   } catch {
     throw new Error("Entschluesselung fehlgeschlagen (Daten beschaedigt oder unvollstaendig).");
   }
+}
+
+// Fuer die beiden Fragebogen-Spalten (Welle 3). Sie liegen in NEUEN
+// text-Spalten (answers_enc/followups_enc) statt im alten jsonb, weil
+// Ciphertext kein gueltiges JSON mehr ist.
+//
+// Beim Lesen gilt: bevorzugt die verschluesselte Spalte, sonst die alte
+// jsonb-Spalte (Bestandszeilen vor der Migration). Rueckgabe ist IMMER
+// ein fertig geparstes Objekt -- das Frontend reicht `row.answers` beim
+// erneuten Speichern unveraendert zurueck, ein String wuerde dort still
+// doppelt JSON-kodiert.
+async function jsonVerschluesseln(wert: unknown): Promise<string | null> {
+  if (wert == null) return null;
+  return await verschluesseln(JSON.stringify(wert));
+}
+
+async function jsonLesen<T>(enc: string | null | undefined, alt: unknown, wo: string): Promise<T | null> {
+  if (enc != null && enc !== "") {
+    let txt: string | null;
+    try {
+      txt = await entschluesseln(enc);
+    } catch (e) {
+      console.error(`[ai ${VERSION}] Entschluesselung fehlgeschlagen bei ${wo}: ${e instanceof Error ? e.message : String(e)}`);
+      return null;
+    }
+    if (txt == null || txt === "") return null;
+    try {
+      return JSON.parse(txt) as T;
+    } catch {
+      // Kein Wert-Fragment in die Meldung, siehe Hinweis oben.
+      console.error(`[ai ${VERSION}] ${wo}: entschluesselter Wert ist kein gueltiges JSON.`);
+      return null;
+    }
+  }
+  return (alt ?? null) as T | null;
 }
 
 // Tolerante Variante fuer aggregierte Listen, die in einen Prompt fliessen
@@ -524,6 +559,9 @@ Deno.serve(async (req) => {
         ["conflicts", ["title", "content", "ai_reflection"]],
         ["chat_messages", ["content"]], ["probes", ["q", "a"]],
         ["doc_chats", ["content"]],
+        // Welle 3: die verschluesselten Werte liegen in eigenen Spalten,
+        // die alten jsonb-Spalten muessen leer sein.
+        ["assessments", ["answers_enc", "followups_enc"]],
       ];
       const bericht: Record<string, unknown> = {};
       for (const [tabelle, spalten] of ZIELE) {
@@ -540,6 +578,13 @@ Deno.serve(async (req) => {
         }
         bericht[tabelle] = zahl;
       }
+      // Restbestand in den alten jsonb-Spalten: muss 0 sein, sonst liegt
+      // dort noch lesbarer Fragebogen-Klartext.
+      const { data: altRest } = await admin.from("assessments").select("answers, followups");
+      bericht["assessments_alt_klartext"] = {
+        answers: (altRest ?? []).filter((a) => a.answers != null).length,
+        followups: (altRest ?? []).filter((a) => a.followups != null).length,
+      };
       return json({ ok: true, bericht });
     }
 
@@ -600,7 +645,19 @@ Deno.serve(async (req) => {
         created_at: c.created_at,
         observation: await entschluesselnTolerant(c.observation, `chronicle.observation id=${c.id}`),
       })));
-      return json({ ok: true, row: row ?? null, profile, chronicle });
+      // answers/followups als geparste Objekte zurueckgeben, nie als
+      // String: das Frontend reicht row.answers beim erneuten Speichern
+      // unveraendert weiter (Wiederholen-Knopf bei fehlgeschlagener
+      // Auswertung) -- ein String wuerde dort doppelt kodiert.
+      const rowAus = row
+        ? {
+          ...row,
+          answers: await jsonLesen(row.answers_enc, row.answers, `assessments.answers user=${user.id}`),
+          followups: await jsonLesen(row.followups_enc, row.followups, `assessments.followups user=${user.id}`),
+          answers_enc: undefined, followups_enc: undefined,
+        }
+        : null;
+      return json({ ok: true, row: rowAus, profile, chronicle });
     }
 
     // ─── Tagebuch: Impression + Profil-Update ───────────────
@@ -868,13 +925,34 @@ Antworte nur mit den drei Teilen.`, 2500);
       });
     }
 
-    // ─── Fragebogen auswerten + Nachfragen generieren ───────
+    // ─── Fragebogen speichern, auswerten, Nachfragen erzeugen ─
+    // Speichert jetzt selbst (nur so kommen die Antworten verschluesselt
+    // in die Datenbank) und akzeptiert uebergangsweise weiter den alten
+    // Aufruf ohne answers, bei dem das Frontend schon gespeichert hat.
     if (body.action === "assessment") {
-      const { data: a } = await admin.from("assessments")
-        .select("answers").eq("couple_id", member.couple_id).eq("user_id", user.id).single();
-      if (!a?.answers) return json({ error: "Keine Antworten gefunden." }, 404);
+      let answers: Record<string, { frage: string; antwort: string }> | null = null;
+      if (body.answers != null && typeof body.answers === "object") {
+        answers = body.answers as Record<string, { frage: string; antwort: string }>;
+        await admin.from("assessments").upsert({
+          couple_id: member.couple_id, user_id: user.id,
+          answers_enc: await jsonVerschluesseln(answers),
+          answers: null,               // Klartext-Altbestand mit aufraeumen
+          completed: true, updated_at: new Date().toISOString(),
+        });
+      } else {
+        const { data: a } = await admin.from("assessments")
+          .select("answers, answers_enc").eq("couple_id", member.couple_id).eq("user_id", user.id).single();
+        answers = await jsonLesen(a?.answers_enc, a?.answers, `assessments.answers user=${user.id}`);
+        // Alt-Klartext bei dieser Gelegenheit nachziehen
+        if (answers && !a?.answers_enc) {
+          await admin.from("assessments").update({
+            answers_enc: await jsonVerschluesseln(answers), answers: null,
+          }).eq("couple_id", member.couple_id).eq("user_id", user.id);
+        }
+      }
+      if (!answers) return json({ error: "Keine Antworten gefunden." }, 404);
 
-      const answersText = Object.values(a.answers as Record<string, { frage: string; antwort: string }>)
+      const answersText = Object.values(answers)
         .map((x) => `- ${x.frage}\n  Antwort: ${x.antwort}`).join("\n");
       const { myProfile } = await kontext();
 
@@ -894,7 +972,8 @@ Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","...","..."]}`);
       try { fragen = JSON.parse(raw.replace(/```json|```/g, "").trim()).fragen.slice(0, 3); } catch { fragen = []; }
       const followups = fragen.map((q) => ({ q }));
       await admin.from("assessments").update({
-        followups, interview_done: followups.length === 0, updated_at: new Date().toISOString(),
+        followups_enc: await jsonVerschluesseln(followups), followups: null,
+        interview_done: followups.length === 0, updated_at: new Date().toISOString(),
       }).eq("couple_id", member.couple_id).eq("user_id", user.id);
       return json({ ok: true, followups });
     }
@@ -902,8 +981,9 @@ Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","...","..."]}`);
     // ─── Antwort auf eine Nachfrage verarbeiten ─────────────
     if (body.action === "assessment_followup") {
       const { data: a } = await admin.from("assessments")
-        .select("followups").eq("couple_id", member.couple_id).eq("user_id", user.id).single();
-      const followups = (a?.followups ?? []) as { q: string; a?: string }[];
+        .select("followups, followups_enc").eq("couple_id", member.couple_id).eq("user_id", user.id).single();
+      const followups = (await jsonLesen<{ q: string; a?: string }[]>(
+        a?.followups_enc, a?.followups, `assessments.followups user=${user.id}`)) ?? [];
       const idx = Number(body.index);
       if (!followups[idx]) return json({ error: "Frage nicht gefunden." }, 404);
       followups[idx].a = String(body.answer ?? "").slice(0, 2000);
@@ -914,7 +994,8 @@ Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","...","..."]}`);
 
       const done = followups.every((f) => f.a);
       await admin.from("assessments").update({
-        followups, interview_done: done, updated_at: new Date().toISOString(),
+        followups_enc: await jsonVerschluesseln(followups), followups: null,
+        interview_done: done, updated_at: new Date().toISOString(),
       }).eq("couple_id", member.couple_id).eq("user_id", user.id);
       return json({ ok: true, done });
     }
@@ -929,9 +1010,10 @@ Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","...","..."]}`);
           .eq("couple_id", member.couple_id).eq("user_id", uid).limit(100);
         const { data: k } = await admin.from("conflicts").select("content")
           .eq("couple_id", member.couple_id).eq("user_id", uid).limit(100);
-        const { data: a } = await admin.from("assessments").select("answers")
+        const { data: a } = await admin.from("assessments").select("answers, answers_enc")
           .eq("couple_id", member.couple_id).eq("user_id", uid).maybeSingle();
-        const answersLen = a?.answers ? JSON.stringify(a.answers).length / 2 : 0;
+        const answersObj = await jsonLesen(a?.answers_enc, a?.answers, `assessments.answers user=${uid}`);
+        const answersLen = answersObj ? JSON.stringify(answersObj).length / 2 : 0;
         // WICHTIG: Erst entschluesseln, DANN zaehlen. Ciphertext ist
         // systematisch laenger als sein Klartext -- mit der Rohlaenge
         // wuerde sich die Schwelle fuers Oeffnen des gemeinsamen Raums
@@ -1777,11 +1859,12 @@ async function materialFuer(
   const { data: k } = await admin.from("conflicts").select("title, content, created_at")
     .eq("couple_id", coupleId).eq("user_id", uid)
     .order("created_at", { ascending: false }).limit(40);
-  const { data: a } = await admin.from("assessments").select("answers")
+  const { data: a } = await admin.from("assessments").select("answers, answers_enc")
     .eq("couple_id", coupleId).eq("user_id", uid).maybeSingle();
-  const answers = a?.answers
-    ? Object.values(a.answers as Record<string, { frage: string; antwort: string }>)
-        .map((x) => `${x.frage} -> ${x.antwort}`).join("\n")
+  const answersObj = await jsonLesen<Record<string, { frage: string; antwort: string }>>(
+    a?.answers_enc, a?.answers, `assessments.answers user=${uid}`);
+  const answers = answersObj
+    ? Object.values(answersObj).map((x) => `${x.frage} -> ${x.antwort}`).join("\n")
     : "(kein Fragebogen)";
   const chronik = await getChronik(admin, uid);
   // Tolerant entschluesseln: hier stehen bis zu 120 Zeilen nebeneinander,

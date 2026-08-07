@@ -559,3 +559,23 @@ alter table chronicle enable row level security;
 drop policy if exists "chronicle: nur eigene lesen" on chronicle;
 create policy "chronicle: nur eigene lesen" on chronicle
   for select using (user_id = auth.uid());
+
+-- ─────────────────────────────────────────────────────────────
+-- Delta 2026-08-07e: Fragebogen verschluesseln (Welle 3).
+--
+-- answers/followups sind jsonb. Ein verschluesselter Wert ist kein
+-- gueltiges JSON mehr und passt dort nicht hinein. Statt den
+-- Spaltentyp zu aendern -- was ein Zeitfenster erzeugt, in dem das
+-- Speichern entweder hart scheitert oder still Klartext schreibt --
+-- kommen zwei NEUE Spalten daneben. Rein additiv, jederzeit
+-- rueckrollbar, entspricht der Konvention dieses Projekts.
+--
+-- Die Edge Function schreibt ab jetzt nur noch in *_enc und liest
+-- bevorzugt von dort, faellt bei leeren *_enc auf die alten Spalten
+-- zurueck (Bestandszeilen vor der Migration). Die alten Spalten
+-- werden spaeter in einem eigenen, entspannten Schritt entfernt --
+-- erst wenn sicher ist, dass nirgends mehr etwas darauf zugreift.
+-- ─────────────────────────────────────────────────────────────
+
+alter table assessments add column if not exists answers_enc text;
+alter table assessments add column if not exists followups_enc text;
