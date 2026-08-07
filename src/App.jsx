@@ -9,6 +9,7 @@ import Report from "./sections/Report.jsx";
 import Landing from "./Landing.jsx";
 import Invite from "./Invite.jsx";
 import Settings from "./sections/Settings.jsx";
+import Geraetesperre from "./sections/Geraetesperre.jsx";
 import AdminDashboard from "./AdminDashboard.jsx";
 
 function codeAusUrl() {
@@ -248,12 +249,36 @@ function Main({ session, membership }) {
   const [raum, setRaum] = useState("dein");
   const [deinTab, setDeinTab] = useState("tagebuch");
   const [state, setState] = useState(null);
+  // Wiedereinstiegs-Schutz (Backlog Punkt 6): pinGesetzt=null, solange der
+  // Status noch nicht bekannt ist -- erst dann darf "Dein Raum" ueberhaupt
+  // gerendert werden, sonst blitzt der Inhalt kurz unverschluesselt auf.
+  const [pinGesetzt, setPinGesetzt] = useState(null);
+  const [entsperrt, setEntsperrt] = useState(false);
 
   async function loadState() {
     const { data } = await supabase.rpc("gate_progress");
     setState(data);
   }
   useEffect(() => { loadState(); }, []);
+
+  async function pruefePinStatus() {
+    try { const r = await callAI({ action: "lock_status" }); setPinGesetzt(!!r.gesetzt); }
+    catch { setPinGesetzt(false); }
+  }
+  useEffect(() => { pruefePinStatus(); }, []);
+
+  useEffect(() => {
+    function onVisibility() {
+      // Sperrt sofort beim Verlassen des Tabs/Geraets -- beim Zurueckkehren
+      // steht die Sperre dann schon, statt erst danach aufzupoppen.
+      if (document.visibilityState === "hidden") setEntsperrt(false);
+    }
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, []);
+
+  const deinBereit = pinGesetzt !== null;
+  const deinGesperrt = pinGesetzt === true && !entsperrt;
 
   const gateOpen = !!state?.gate_open;
 
@@ -310,7 +335,7 @@ function Main({ session, membership }) {
         ))}
       </div>
 
-      {raum === "dein" && (
+      {raum === "dein" && deinBereit && !deinGesperrt && (
         <div style={{ display: "flex", gap: 6, marginBottom: 22, flexWrap: "wrap" }}>
           {deinTabs.map(([id, label]) => (
             <button key={id} onClick={() => setDeinTab(id)}
@@ -326,16 +351,22 @@ function Main({ session, membership }) {
           ))}
         </div>
       )}
-      {raum !== "dein" && <div style={{ marginBottom: 22 }} />}
+      {(raum !== "dein" || !deinBereit || deinGesperrt) && <div style={{ marginBottom: 22 }} />}
 
-      {raum === "dein" && deinTab === "tagebuch" && <Diary membership={membership} />}
-      {raum === "dein" && deinTab === "ueber_dich" && <AboutYou membership={membership} />}
-      {raum === "dein" && deinTab === "konflikte" && <Conflicts membership={membership} />}
+      {raum === "dein" && !deinBereit && <p style={st.hint}>Lade …</p>}
+      {raum === "dein" && deinBereit && deinGesperrt && (
+        <Geraetesperre onEntsperrt={() => setEntsperrt(true)} />
+      )}
+      {raum === "dein" && deinBereit && !deinGesperrt && deinTab === "tagebuch" && <Diary membership={membership} />}
+      {raum === "dein" && deinBereit && !deinGesperrt && deinTab === "ueber_dich" && <AboutYou membership={membership} />}
+      {raum === "dein" && deinBereit && !deinGesperrt && deinTab === "konflikte" && <Conflicts membership={membership} />}
       {raum === "zwischenraum" && (
         <Report membership={membership} onGespraech={() => { setRaum("dein"); setDeinTab("ueber_dich"); }} />
       )}
       {raum === "euer" && <SharedChat membership={membership} state={state} refreshState={loadState} />}
-      {raum === "einstellungen" && <Settings membership={membership} onChanged={loadState} />}
+      {raum === "einstellungen" && (
+        <Settings membership={membership} onChanged={loadState} onLockChanged={pruefePinStatus} />
+      )}
     </Shell>
   );
 }

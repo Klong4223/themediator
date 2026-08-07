@@ -69,10 +69,12 @@ src/
     AboutYou.jsx        Fragebogen, KI-Interview, Profil, Chronik + Spiegel (Dein Raum)
     Spiegel.jsx         Consent, Polling, Generierung, DocChat — in AboutYou.jsx eingebunden
     Report.jsx          Beziehungsbild + "Der nächste Schritt" (Der Zwischenraum)
+    BeziehungsbildGespraech.jsx  Gespräch zu fertigen Berichten, in AboutYou.jsx (Dein Raum)
     NaechsterSchritt.jsx  Meilenstein-Karte, gespeist aus der meilensteine-Aktion
     DocChat.jsx          Verankerter Gesprächsfaden zu Bericht/Spiegel (privat)
     SharedChat.jsx       Gate + moderierter gemeinsamer Chat (Euer Raum)
-    Settings.jsx         Benachrichtigungen, Konto, Löschung (eigenes Icon, kein Raum)
+    Geraetesperre.jsx    Lock-Screen fuer den Wiedereinstiegs-Schutz (Dein Raum)
+    Settings.jsx         Benachrichtigungen, Konto, Löschung, PIN-Sperre (eigenes Icon, kein Raum)
 supabase/
   schema.sql                   Vollständiges Schema, idempotent
   functions/ai/index.ts        Gesamte KI-Logik
@@ -94,6 +96,8 @@ Begründung: `KONZEPT.md`.
 - `doc_chats` (verankerte private Gespräche zu Bericht/Spiegel, `kind`+`doc_id`)
 - `chat_messages` (sender_id NULL = KI, `origin` = Herkunft bei getragenen
   Eröffnungen, z.B. `doc_chat:report`), `couple_state` (gate_open)
+- `device_locks` (PIN-Hash+Salt fuer den Wiedereinstiegs-Schutz, RLS aktiv
+  mit **null** Policies — nur die Edge Function per Service Role kommt ran)
 - `email_events`, `admins`
 
 **RLS-Prinzip:** Eigene Inhalte nur für sich selbst lesbar. Partner-Profile,
@@ -105,7 +109,8 @@ Edge Function (Service Role) liest sie.
 `diary`, `diary_reply`, `conflict`, `assessment`, `assessment_followup`,
 `probe`, `probe_answer`, `gate`, `chat`, `report`, `report_poll`, `mirror`,
 `mirror_poll`, `doc_chat`, `doc_chat_share`, `meilensteine`, `notify`,
-`daily_digest`, `delete_account`, `admin_stats`
+`daily_digest`, `lock_status`, `lock_set`, `lock_remove`, `lock_verify`,
+`delete_account`, `admin_stats`
 
 Beziehungsbild und Spiegel laufen seit 07.08.2026 über OpenAIs Responses-API
 mit `background: true` (`starteHintergrundantwort`/`holeHintergrundantwort`):
@@ -176,37 +181,46 @@ Reihenfolge immer: SQL → Edge Function → Frontend.
    `output_text`-Kurzfeld statt den Text zusätzlich aus dem strukturierten
    `output`-Array zu holen) — behoben in `2026-08-06e`/`d31f837`. Mit echten
    Nutzerinnen (Kathrin/Markus, Sarah) verifiziert.
-2. **Versionsinfo in den Einstellungen** — Frontend-Version und tatsächlich
-   deployte Edge-Function-Version anzeigen (letztere per `?ping=1`), damit
-   sichtbar ist, ob ein Update angekommen ist.
-3. **Tagebuch-Ablauf:** Ein neuer Eintrag soll sofort oben in der Liste
-   erscheinen, der Ladehinweis direkt darunter — dort, wo die Antwort kommt.
-   Aktuell steht „Zwischenraum liest …" oben am Eingabefeld, der Eintrag
-   erscheint weit darunter.
-4. **Sichtbarer Arbeitsstatus** überall statt des unscheinbaren Hinweises:
-   deutlich erkennbar, dass die KI arbeitet, gern mit Phasenanzeige
-   („liest deinen Eintrag" → „formuliert eine Rückmeldung"). Betrifft Tagebuch,
-   Dialog, Konflikte, Nachfragen, Chat-Moderation, Beziehungsbild, Spiegel.
-   Für Beziehungsbild/Spiegel gibt es seit 06.08. immerhin eine Stale-Erkennung
-   mit Wiederholen-Knopf (`Report.jsx`) — das ist ein Netz gegen ewiges Warten,
-   keine Phasenanzeige.
+2. ~~Versionsinfo in den Einstellungen~~ **→ gelöst (07.08.2026).**
+   Frontend-Version (`FRONTEND_VERSION` in `supabase.js`) und tatsächlich
+   deployte Edge-Function-Version (`?ping=1` über `pingAI()`) stehen in
+   `Settings.jsx` untereinander — sichtbar per Browser-QA verifiziert.
+3. ~~Tagebuch-Ablauf~~ **→ gelöst (07.08.2026).** `Diary.jsx` laedt die
+   Liste sofort nach dem Speichern neu, der neue Eintrag erscheint oben,
+   der Ladehinweis („Zwischenraum liest deinen Eintrag …") steht direkt am
+   Eintrag statt am Eingabefeld.
+4. ~~Sichtbarer Arbeitsstatus~~ **→ gelöst (07.08.2026).** Eigener,
+   konkreter Ladehinweis je Aktion statt generischem Button-Spinner:
+   Tagebuch, Dialog-Antworten, Konflikte, Chat-Moderation. Beziehungsbild/
+   Spiegel haben zusätzlich eine echte Phasenanzeige über die vorhandene
+   `stage`-Spalte (`Report.jsx`/`Spiegel.jsx`: „liest euch beide …" vs.
+   „schreibt euer Beziehungsbild …").
 5. ~~Barometer~~ **→ „Der nächste Schritt"** (verworfen und ersetzt am
    07.08.2026, siehe `KONZEPT.md`): Kein Füllstand je Partner — ein
    Fleiß-Maß über die andere Person würde bei einem Paar in der Krise zum
    Vorwurf. Stattdessen eine Karte, die den nächsten noch nicht erreichten
    Meilenstein benennt und im Klartext begründet, warum er es noch nicht
    ist. Baut auf dem vorhandenen Muster von `couple_state.readiness` auf.
-6. **Wiedereinstiegs-Schutz für „Dein Raum"** (Idee von Peter, 07.08.2026) —
-   PIN oder Biometrie, bevor der private Bereich nach einer Pause erneut
-   sichtbar wird. Motivation nicht Kryptografie, sondern die realistischste
-   Bedrohung bei einem Paar-Produkt: das entsperrte Handy liegt kurz auf dem
-   Tisch, die Partnerin oder der Partner nimmt es in die Hand. Dasselbe
-   Prinzip wie der App-Lock bei Signal oder Banking-Apps — die Anmeldesitzung
-   bleibt bestehen, aber niemand kommt ohne den zweiten Schritt an Inhalte.
-   **Wichtig:** muss echt wirken, nicht nur beruhigen — sonst widerspricht es
-   dem „technisch erzwungen, nicht nur zugesagt"-Versprechen, mit dem sich
-   Zwischenraum von anderen Apps absetzt. Ehrlich beschriften als „zusätzliche
-   Sperre auf diesem Gerät", nicht als Verschlüsselung.
+6. ~~Wiedereinstiegs-Schutz für „Dein Raum"~~ **→ gelöst (07.08.2026).**
+   PIN, bevor „Dein Raum" nach einer Pause erneut sichtbar wird. Motivation
+   nicht Kryptografie, sondern die realistischste Bedrohung bei einem
+   Paar-Produkt: das entsperrte Handy liegt kurz auf dem Tisch, die
+   Partnerin oder der Partner nimmt es in die Hand. Dasselbe Prinzip wie der
+   App-Lock bei Signal oder Banking-Apps — die Anmeldesitzung bleibt
+   bestehen, aber niemand kommt ohne den zweiten Schritt an Inhalte.
+   Technisch: eigene Tabelle `device_locks` (salted SHA-256, Salt pro
+   Nutzer) mit RLS aktiv und **null** Policies — kein Client, auch nicht der
+   eigene, kann den Hash je lesen, nur die Edge Function per Service Role.
+   Vier Aktionen (`lock_status`/`lock_set`/`lock_remove`/`lock_verify`),
+   `App.jsx` sperrt „Dein Raum" ueber `visibilitychange` (sofort beim
+   Verstecken, nicht erst beim Zurueckkommen) und laesst die anderen beiden
+   Raeume unberuehrt, `Settings.jsx` verwaltet Einrichten/Aendern/Entfernen.
+   Ehrlich beschriftet als „zusätzliche Sperre auf diesem Gerät", nicht als
+   Verschlüsselung — schützt nicht vor jemandem mit dauerhaftem Zugriff auf
+   das entsperrte Gerät. Per Browser-QA mit Wegwerf-Testkonto vollständig
+   durchgespielt (Sperre setzen/falsch/richtig, PIN ändern mit falschem/
+   richtigem altem PIN, Sperre entfernen, `delete_account` räumt
+   `device_locks` mit auf) und rückstandsfrei aufgeräumt.
 7. **Verschlüsselung der Inhalte in der Datenbank** — als Letztes. Ziel:
    Schutz gegen Datenbank-Leaks und versehentliches Mitlesen im Table Editor.
    Schlüssel als Edge-Function-Secret. Klar kommunizierte Grenze: schützt nicht

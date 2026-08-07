@@ -227,7 +227,26 @@ async function holeHintergrundantwort(responseId: string): Promise<Hintergrundst
   return { fertig: true, fehler: `OpenAI-Lauf beendet mit Status '${data.status}' (${grund}).` };
 }
 
-const VERSION = "2026-08-07c";
+// Wiedereinstiegs-Schutz (CLAUDE.md Backlog Punkt 6): gesalzener SHA-256-
+// Hash. Kein bcrypt/scrypt verfuegbar ohne externe Bibliothek in Deno, aber
+// fuer einen kurzen Geraete-PIN mit zufaelligem Salt pro Person ausreichend
+// -- die Bedrohung ist kurzer physischer Zugriff aufs entsperrte Geraet,
+// kein Offline-Angriff auf die Datenbank.
+function neuesSalt(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+async function pinHash(pin: string, salt: string): Promise<string> {
+  const enc = new TextEncoder().encode(`${salt}:${pin}`);
+  const digest = await crypto.subtle.digest("SHA-256", enc);
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+function gueltigerPin(pin: unknown): pin is string {
+  return typeof pin === "string" && /^\d{4,8}$/.test(pin);
+}
+
+const VERSION = "2026-08-07d";
 
 // Schwelle fuer "bild_duenn" (KONZEPT.md 7.2): je Person mindestens so viele
 // Chronik-Eintraege, sonst zeigt das Frontend vor dem Erstellen eine
@@ -1073,6 +1092,55 @@ Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","..."]}`, 900);
       return json({ ok: true, recipients: sent });
     }
 
+    // ─── Wiedereinstiegs-Schutz: Zustand abfragen ───────────
+    // CLAUDE.md Backlog Punkt 6. Muss ueber die Edge Function laufen, weil
+    // device_locks bewusst keine Client-Policy hat (siehe Tabellenkommentar).
+    if (body.action === "lock_status") {
+      const { data } = await admin.from("device_locks")
+        .select("user_id").eq("user_id", user.id).maybeSingle();
+      return json({ gesetzt: !!data });
+    }
+
+    // ─── Wiedereinstiegs-Schutz: PIN setzen oder aendern ────
+    if (body.action === "lock_set") {
+      if (!gueltigerPin(body.pin)) return json({ error: "Der PIN muss aus 4-8 Ziffern bestehen." }, 400);
+      const { data: bestehend } = await admin.from("device_locks")
+        .select("pin_hash, pin_salt").eq("user_id", user.id).maybeSingle();
+      if (bestehend) {
+        if (!gueltigerPin(body.altes_pin)) return json({ error: "Bitte zuerst den bisherigen PIN eingeben." }, 400);
+        const pruef = await pinHash(body.altes_pin, bestehend.pin_salt);
+        if (pruef !== bestehend.pin_hash) return json({ error: "Der bisherige PIN stimmt nicht." }, 403);
+      }
+      const salt = neuesSalt();
+      const hash = await pinHash(body.pin, salt);
+      await admin.from("device_locks").upsert({
+        user_id: user.id, pin_hash: hash, pin_salt: salt, updated_at: new Date().toISOString(),
+      });
+      return json({ ok: true });
+    }
+
+    // ─── Wiedereinstiegs-Schutz: PIN entfernen ──────────────
+    if (body.action === "lock_remove") {
+      const { data: bestehend } = await admin.from("device_locks")
+        .select("pin_hash, pin_salt").eq("user_id", user.id).maybeSingle();
+      if (!bestehend) return json({ ok: true });
+      if (!gueltigerPin(body.pin)) return json({ error: "Bitte den aktuellen PIN eingeben." }, 400);
+      const pruef = await pinHash(body.pin, bestehend.pin_salt);
+      if (pruef !== bestehend.pin_hash) return json({ error: "Der PIN stimmt nicht." }, 403);
+      await admin.from("device_locks").delete().eq("user_id", user.id);
+      return json({ ok: true });
+    }
+
+    // ─── Wiedereinstiegs-Schutz: PIN pruefen ────────────────
+    if (body.action === "lock_verify") {
+      const { data: bestehend } = await admin.from("device_locks")
+        .select("pin_hash, pin_salt").eq("user_id", user.id).maybeSingle();
+      if (!bestehend) return json({ ok: true }); // keine Sperre gesetzt -- immer offen
+      if (!gueltigerPin(body.pin)) return json({ ok: false });
+      const pruef = await pinHash(body.pin, bestehend.pin_salt);
+      return json({ ok: pruef === bestehend.pin_hash });
+    }
+
     // ─── Konto loeschen (DSGVO Art. 17) ─────────────────────
     if (body.action === "delete_account") {
       const cid = member.couple_id;
@@ -1083,6 +1151,7 @@ Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","..."]}`, 900);
       await admin.from("assessments").delete().eq("user_id", user.id);
       await admin.from("probes").delete().eq("user_id", user.id);
       await admin.from("doc_chats").delete().eq("user_id", user.id);
+      await admin.from("device_locks").delete().eq("user_id", user.id);
       await admin.from("mirrors").delete().eq("user_id", user.id);
       await admin.from("ai_profiles").delete().eq("user_id", user.id);
       await admin.from("chronicle").delete().eq("user_id", user.id);

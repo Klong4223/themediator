@@ -459,3 +459,26 @@ create policy "doc_chats: nur eigene lesen" on doc_chats
 -- Herkunft einer KI-Eroeffnung im gemeinsamen Raum sichtbar machen
 -- (Uebergangsmoment 3 in KONZEPT.md). NULL = normale Moderation.
 alter table chat_messages add column if not exists origin text;
+
+-- ─────────────────────────────────────────────────────────────
+-- Delta 2026-08-07b: Wiedereinstiegs-Schutz fuer "Dein Raum"
+-- (CLAUDE.md Backlog Punkt 6). Ein echter Geraete-PIN-Schutz,
+-- kein Beruhigungs-UI: der PIN-Hash verlaesst die Edge Function
+-- NIE -- auch nicht als Select fuer den eigenen Client. Grund:
+-- couple_members ist per RLS couple-weit lesbar (is_member), ein
+-- Hash dort waere fuer die Partnerin/den Partner direkt lesbar
+-- und bei einem 4-6-stelligen PIN offline leicht zu brechen.
+-- Deshalb eine eigene Tabelle OHNE jede Client-Policy -- weder
+-- select noch insert. Nur die Edge Function (Service Role) greift
+-- zu, Pruefung und Verwaltung laufen ausschliesslich ueber sie.
+-- ─────────────────────────────────────────────────────────────
+
+create table if not exists device_locks (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  pin_hash text not null,
+  pin_salt text not null,
+  updated_at timestamptz not null default now()
+);
+
+alter table device_locks enable row level security;
+-- Bewusst keine Policies. RLS ist damit "deny all" fuer jeden Client.
