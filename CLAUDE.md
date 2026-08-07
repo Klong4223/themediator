@@ -162,6 +162,10 @@ Reihenfolge immer: SQL → Edge Function → Frontend.
    Braucht mindestens den Pro-Plan (Settings → Add-ons). Bis dahin: jeder
    schreibende Eingriff in die Datenbank ist ohne Netz. Dringlicher als
    Punkt 5, weil Verschlüsselung ohne Backup das Risiko nur verschiebt.
+   **Bewusst zurückgestellt (Peter, 07.08.2026):** noch eine Handvoll
+   Testerinnen, kein zahlender Betrieb — Aktivierung erst bei größerer
+   Nutzerbasis. Vor dem nächsten größeren Nutzerschub oder Kommerzialisierung
+   erneut ansprechen, nicht stillschweigend liegen lassen.
 1. ~~Laufzeit von Beziehungsbild/Spiegel~~ **→ gelöst (07.08.2026).**
    `report`/`mirror` laufen jetzt über OpenAIs Responses-API mit
    `background: true`, Fortschritt per Polling (`report_poll`/`mirror_poll`)
