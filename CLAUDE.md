@@ -56,23 +56,33 @@ ebenfalls über Resend.
 
 ```
 src/
-  App.jsx              Auth, Onboarding, Tab-Navigation, Admin-Weiche
+  App.jsx              Auth, Onboarding, Admin-Weiche, Navigation (drei Räume)
   Landing.jsx          Startseite für Nicht-Angemeldete
+  Invite.jsx           Ansprache für eingeladene Personen (?code= vor dem Login)
   Legal.jsx            Impressum, Datenschutz, Nutzungshinweise (Footer-Modal)
   AdminDashboard.jsx   Separates Admin-Konto, nur aggregierte Kennzahlen
   ui.jsx               Design-Tokens (C, st, font), Btn, Tag, Shell, InviteBox
   supabase.js          Client + callAI()
   sections/
-    Diary.jsx          Tagebuch, Dialog-Fäden, "Zwischenraum fragt"
-    Conflicts.jsx      Themen & Konflikte
-    SharedChat.jsx     Gate + moderierter gemeinsamer Chat
-    Report.jsx         Beziehungsbild + Spiegel (Hintergrundverarbeitung)
-    AboutYou.jsx       Fragebogen, KI-Interview, Profil, Chronik
-    Settings.jsx       Benachrichtigungen, Konto, Löschung
+    Diary.jsx           Tagebuch, Dialog-Fäden, "Zwischenraum fragt" (Dein Raum)
+    Conflicts.jsx       Themen & Konflikte (Dein Raum)
+    AboutYou.jsx        Fragebogen, KI-Interview, Profil, Chronik + Spiegel (Dein Raum)
+    Spiegel.jsx         Consent, Polling, Generierung, DocChat — in AboutYou.jsx eingebunden
+    Report.jsx          Beziehungsbild + "Der nächste Schritt" (Der Zwischenraum)
+    NaechsterSchritt.jsx  Meilenstein-Karte, gespeist aus der meilensteine-Aktion
+    DocChat.jsx          Verankerter Gesprächsfaden zu Bericht/Spiegel (privat)
+    SharedChat.jsx       Gate + moderierter gemeinsamer Chat (Euer Raum)
+    Settings.jsx         Benachrichtigungen, Konto, Löschung (eigenes Icon, kein Raum)
 supabase/
   schema.sql                   Vollständiges Schema, idempotent
   functions/ai/index.ts        Gesamte KI-Logik
 ```
+
+**Navigation (App.jsx, seit 07.08.2026):** drei Räume statt einzelner Tabs —
+„Dein Raum" (Unter-Navigation: Tagebuch/Über dich/Themen & Konflikte),
+„Der Zwischenraum" (Beziehungsbild), „Euer Raum" (gemeinsamer Chat).
+Einstellungen ist Utility, kein Raum, eigenes Zahnrad-Icon. Details und
+Begründung: `KONZEPT.md`.
 
 ### Datenmodell (Kern)
 
@@ -80,26 +90,31 @@ supabase/
 - `diary_entries` + `diary_replies` (Dialog-Fäden, `thread_closed`)
 - `conflicts`, `assessments` (Fragebogen + KI-Nachfragen), `probes` (Nachfragen)
 - `ai_profiles` (verdichtetes Profil), `chronicle` (dauerhafte Beobachtungen)
-- `reports`, `mirrors` (mit `status`: running/done/error)
-- `chat_messages` (sender_id NULL = KI), `couple_state` (gate_open)
+- `reports`, `mirrors` (mit `status`: running/done/error, `stage`: notizen/bericht)
+- `doc_chats` (verankerte private Gespräche zu Bericht/Spiegel, `kind`+`doc_id`)
+- `chat_messages` (sender_id NULL = KI, `origin` = Herkunft bei getragenen
+  Eröffnungen, z.B. `doc_chat:report`), `couple_state` (gate_open)
 - `email_events`, `admins`
 
-**RLS-Prinzip:** Eigene Inhalte nur für sich selbst lesbar. Partner-Profile und
--Chroniken sind für Clients gar nicht zugänglich — nur die Edge Function
-(Service Role) liest sie.
+**RLS-Prinzip:** Eigene Inhalte nur für sich selbst lesbar. Partner-Profile,
+-Chroniken und -Gespräche sind für Clients gar nicht zugänglich — nur die
+Edge Function (Service Role) liest sie.
 
 ### Aktionen der Edge Function
 
 `diary`, `diary_reply`, `conflict`, `assessment`, `assessment_followup`,
-`probe`, `probe_answer`, `gate`, `chat`, `report`, `mirror`, `notify`,
+`probe`, `probe_answer`, `gate`, `chat`, `report`, `report_poll`, `mirror`,
+`mirror_poll`, `doc_chat`, `doc_chat_share`, `meilensteine`, `notify`,
 `daily_digest`, `delete_account`, `admin_stats`
 
-Beziehungsbild und Spiegel laufen über `EdgeRuntime.waitUntil` im Hintergrund
-und setzen `status` in der Datenbank; das Frontend pollt alle 5 Sekunden.
-Seit Version `2026-08-06c` hat jeder Modellaufruf ein `AbortController`-Limit
-(150 s) und der Gesamtlauf ein Budget (330 s) — Stand 06.08. beobachtet aber
-Läufe, die auch das deutlich überschreiten, ohne dass `status` auf `error`
-kippt. Ursache noch offen, siehe Backlog.
+Beziehungsbild und Spiegel laufen seit 07.08.2026 über OpenAIs Responses-API
+mit `background: true` (`starteHintergrundantwort`/`holeHintergrundantwort`):
+`report`/`mirror` starten nur Stufe 1 und kehren sofort zurück, `report_poll`/
+`mirror_poll` (vom Frontend alle 5 s aufgerufen) fragen den Fortschritt ab und
+stoßen Stufe 2 an. Kein einzelner Funktionsaufruf muss dadurch länger als ein
+paar Sekunden laufen, unabhängig davon, wie lange das Modell denkt — löst das
+alte `EdgeRuntime.waitUntil`-Problem (Wall-Clock-Abbruch mitten im Lauf, siehe
+Git-Historie 06.–07.08.) grundlegend statt es nur abzufedern.
 
 ---
 
@@ -147,18 +162,16 @@ Reihenfolge immer: SQL → Edge Function → Frontend.
    Braucht mindestens den Pro-Plan (Settings → Add-ons). Bis dahin: jeder
    schreibende Eingriff in die Datenbank ist ohne Netz. Dringlicher als
    Punkt 5, weil Verschlüsselung ohne Backup das Risiko nur verschiebt.
-1. **Laufzeit von Beziehungsbild/Spiegel in den Griff bekommen, ohne die
-   Modelltiefe zu beschneiden** — der Kernwert der Begleitung hängt an
-   Aufrufen, die bewusst lange und gründlich denken dürfen. Das AbortController-
-   Timeout aus `2026-08-06c` schützt die Datenbankzeile (kein ewiges
-   „running" mehr), löst aber nicht das eigentliche Problem: Modellaufrufe,
-   die die Wall-Clock-Grenze der Edge Function reißen, laufen weiterhin ins
-   Leere. Naheliegendster Ausweg: OpenAI-Aufrufe über die Responses-API mit
-   `background: true` starten, Antwort per Polling abholen — das entkoppelt
-   Denkzeit des Modells von der Lebensdauer der Edge Function vollständig.
-   Zweitschritt, falls das nicht reicht: den zweistufigen Ablauf (Notizen →
-   Bericht) in zwei eigenständige Funktionsaufrufe zerlegen, die je nur einen
-   Modellaufruf überstehen müssen.
+1. ~~Laufzeit von Beziehungsbild/Spiegel~~ **→ gelöst (07.08.2026).**
+   `report`/`mirror` laufen jetzt über OpenAIs Responses-API mit
+   `background: true`, Fortschritt per Polling (`report_poll`/`mirror_poll`)
+   — kein `EdgeRuntime.waitUntil` mehr, kein Wall-Clock-Risiko, keine
+   Deckelung der Denktiefe. Der zweite, härtere Fund dabei: mehrere
+   Fehlschläge lagen gar nicht an der Laufzeit, sondern an einem eigenen
+   Extraktionsfehler (`holeHintergrundantwort` las nur das oft leere
+   `output_text`-Kurzfeld statt den Text zusätzlich aus dem strukturierten
+   `output`-Array zu holen) — behoben in `2026-08-06e`/`d31f837`. Mit echten
+   Nutzerinnen (Kathrin/Markus, Sarah) verifiziert.
 2. **Versionsinfo in den Einstellungen** — Frontend-Version und tatsächlich
    deployte Edge-Function-Version anzeigen (letztere per `?ping=1`), damit
    sichtbar ist, ob ein Update angekommen ist.
