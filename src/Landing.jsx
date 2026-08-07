@@ -15,6 +15,20 @@ function HeroConvergence() {
   );
 }
 
+// Kennzeichnet ein Beispiel klar als erfunden — an dieser Stelle darf nie
+// der Eindruck entstehen, hier stuenden echte Nutzerdaten.
+function Beispiel({ children }) {
+  return (
+    <span style={{
+      display: "inline-block", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em",
+      textTransform: "uppercase", color: C.inkSoft, background: C.paper,
+      border: `1px solid ${C.line}`, borderRadius: 999, padding: "2px 10px", marginBottom: 10,
+    }}>
+      {children}
+    </span>
+  );
+}
+
 export default function Landing({ onStart }) {
   const h = { fontFamily: font.display, color: C.ink, letterSpacing: "-0.01em" };
   return (
@@ -37,7 +51,7 @@ export default function Landing({ onStart }) {
           <Btn onClick={onStart} style={{ padding: "14px 30px", fontSize: 16 }}>Kostenlos starten</Btn>
         </div>
         <p style={{ fontSize: 13, color: C.inkSoft, marginTop: 12 }}>
-          Testphase · kostenlos · keine Werbung, kein Tracking
+          Testphase · kostenlos · keine Werbung, kein Tracking · du musst nicht auf deinen Partner warten
         </p>
       </S>
 
@@ -55,61 +69,130 @@ export default function Landing({ onStart }) {
         </div>
       </S>
 
-      {/* ─── Wie es funktioniert ─── */}
+      {/* ─── So fühlt es sich an ─── */}
       <S style={{ marginTop: 56 }}>
-        <h2 style={{ ...h, fontSize: 26, textAlign: "center", margin: "0 0 22px" }}>So funktioniert es</h2>
-        <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))" }}>
+        <h2 style={{ ...h, fontSize: 26, textAlign: "center", margin: "0 0 22px" }}>So fühlt es sich an</h2>
+        <div style={{ ...st.card, padding: "22px 24px" }}>
+          <Beispiel>Beispiel — kein echter Eintrag</Beispiel>
+          <p style={{ ...st.body, margin: 0, fontStyle: "italic" }}>
+            „Er sagt, ich mache aus allem ein Drama. Vielleicht stimmt das ja. Aber wenn ich nichts
+            sage, ändert sich nie was."
+          </p>
+          <div style={{ background: C.paper, borderLeft: `3px solid ${C.ink}`, borderRadius: 8, padding: "12px 14px", marginTop: 14 }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: C.ink, letterSpacing: "0.06em" }}>ZWISCHENRAUM</span>
+            <p style={{ ...st.body, marginTop: 4 }}>
+              „Da steckt ein echtes Dilemma drin: Wenn du es ansprichst, giltst du als anstrengend —
+              wenn nicht, bleibst du allein damit. Was wäre denn das Kleinste, das sich ändern müsste,
+              damit sich das Ansprechen gelohnt hätte?"
+            </p>
+          </div>
+        </div>
+        <p style={{ ...st.hint, textAlign: "center", marginTop: 14 }}>
+          Kein Chatbot-Small-Talk. Jemand, der wirklich zuhört — und nachfragt, statt nur zu trösten.
+        </p>
+      </S>
+
+      {/* ─── Die drei Räume ─── */}
+      <S style={{ marginTop: 56 }}>
+        <h2 style={{ ...h, fontSize: 26, textAlign: "center", margin: "0 0 8px" }}>Drei Räume, klar getrennt</h2>
+        <p style={{ ...st.body, textAlign: "center", color: C.inkSoft, maxWidth: 560, margin: "0 auto 22px" }}>
+          Bei jeder Funktion siehst du sofort, wer sie sehen kann. Kein Rätselraten, keine
+          Vertrauensfrage, die man erst erklären müsste.
+        </p>
+        <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
           {[
-            ["1", "Jeder schreibt für sich", "Tagebuch, Konflikte, ein Fragebogen über dich. Dein Raum ist privat — deine Partnerin oder dein Partner liest nie deinen Text. Versprochen und technisch erzwungen."],
-            ["2", "Zwischenraum versteht beide", "Die KI kennt beide Seiten, ergreift aber nie Partei. Sie spiegelt, stellt die richtigen Fragen — und spricht auch an, was du dir vielleicht schönredest."],
-            ["3", "Ihr seht euch neu", "Wenn beide bereit sind: das Beziehungsbild — was du erlebst, was dein Gegenüber erlebt, was zwischen euch passiert. Und ein gemeinsamer, moderierter Raum zum Reden."],
-          ].map(([n, t, d]) => (
-            <div key={n} style={{ ...st.card, padding: "20px" }}>
-              <span style={{ fontFamily: font.display, fontSize: 28, color: n === "2" ? C.ink : n === "1" ? C.a : C.b, fontWeight: 600 }}>{n}</span>
-              <h3 style={{ ...h, fontSize: 17, margin: "6px 0 6px" }}>{t}</h3>
+            ["Dein Raum", C.a, "Tagebuch, Konflikte, ein Fragebogen über dich, dein persönlicher Spiegel. Alles privat — deine Partnerin oder dein Partner liest hier nie mit. Versprochen und technisch erzwungen, nicht nur zugesagt."],
+            ["Der Zwischenraum", C.ink, "Hier entsteht, was keiner von euch allein sehen kann: das Beziehungsbild. Die KI kennt beide Seiten, gibt aber nie Rohtexte weiter — nur neu formuliertes, abgewogenes Verständnis."],
+            ["Euer Raum", C.b, "Ein gemeinsamer, moderierter Chat, sobald ihr beide bereit seid. Alles, was hier steht, sehen beide — offen und auf Augenhöhe."],
+          ].map(([t, col, d]) => (
+            <div key={t} style={{ ...st.card, padding: "20px", borderTop: `3px solid ${col}` }}>
+              <h3 style={{ ...h, fontSize: 18, margin: "0 0 8px" }}>{t}</h3>
               <p style={{ ...st.body, fontSize: 14, margin: 0 }}>{d}</p>
             </div>
           ))}
         </div>
       </S>
 
-      {/* ─── Vertraulichkeit ─── */}
+      {/* ─── Das Beziehungsbild ─── */}
       <S style={{ marginTop: 56 }}>
         <div style={{ ...st.card, borderTop: `4px solid ${C.ink}`, padding: "26px 28px" }}>
-          <h2 style={{ ...h, fontSize: 24, margin: 0 }}>Warum getrennt schreiben?</h2>
+          <h2 style={{ ...h, fontSize: 24, margin: 0 }}>Das Beziehungsbild</h2>
           <p style={{ ...st.body, fontSize: 16, marginTop: 10 }}>
-            Weil Ehrlichkeit einen geschützten Raum braucht. Wer beim Schreiben denkt
-            <em> „das liest nachher mein Partner"</em>, lässt das Wichtigste weg.
-            Deshalb hat bei Zwischenraum jeder ein eigenes Konto mit eigenem Passwort.
-            Was zwischen euch vermittelt wird, entsteht immer neu formuliert — nie aus euren
-            Originaltexten. Und die tiefen gemeinsamen Auswertungen gibt es nur, wenn
-            <strong> beide</strong> sie ausdrücklich freigeben.
+            Wenn beide bereit sind und ausdrücklich zustimmen, entsteht der tiefste Blick, den es bei
+            Zwischenraum gibt: ein Bild in drei Teilen — was du erlebst, was dein Gegenüber erlebt, was
+            zwischen euch beiden passiert. Ohne Urteil, ohne Recht-haben. Diesen Moment gibt es sonst
+            nirgends.
           </p>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14 }}>
-            <Tag role="A">Dein Raum</Tag>
-            <Tag role="B">Ihr / sein Raum</Tag>
-            <span style={{ background: C.paper, color: C.ink, fontSize: 12, fontWeight: 700, letterSpacing: "0.06em", padding: "3px 10px", borderRadius: 999, textTransform: "uppercase", border: `1px solid ${C.line}` }}>
-              Der Zwischenraum
-            </span>
+          <div style={{ marginTop: 16 }}>
+            <Beispiel>Beispiel — kein echtes Beziehungsbild</Beispiel>
+            <div style={{ background: C.paper, borderRadius: 10, padding: "16px 18px", display: "grid", gap: 12 }}>
+              <div>
+                <span style={{ fontSize: 12, fontWeight: 700, color: C.a, letterSpacing: "0.06em" }}>TEIL 1 — DAS ERLEBT ANNA</span>
+                <p style={{ ...st.body, fontSize: 14, margin: "4px 0 0" }}>
+                  „… Anna beschreibt eine tiefe Erschöpfung, die weniger mit den einzelnen Streitpunkten
+                  zu tun hat als mit dem Gefühl, ständig erklären zu müssen, warum etwas für sie wichtig
+                  ist …"
+                </p>
+              </div>
+              <div>
+                <span style={{ fontSize: 12, fontWeight: 700, color: C.b, letterSpacing: "0.06em" }}>TEIL 2 — DAS ERLEBT JONAS</span>
+                <p style={{ ...st.body, fontSize: 14, margin: "4px 0 0" }}>
+                  „… Jonas erlebt dieselben Situationen als Vorwurf, obwohl er versucht, es besser zu
+                  machen — und zieht sich dann eher zurück, statt nachzufragen …"
+                </p>
+              </div>
+              <div>
+                <span style={{ fontSize: 12, fontWeight: 700, color: C.ink, letterSpacing: "0.06em" }}>TEIL 3 — WAS ZWISCHEN EUCH PASSIERT</span>
+                <p style={{ ...st.body, fontSize: 14, margin: "4px 0 0" }}>
+                  „… Beide beantworten gerade unterschiedliche Fragen: Anna fragt ‚Wie machen wir es
+                  besser?', Jonas eher ‚Kann ich das noch aus vollem Herzen wollen?' …"
+                </p>
+              </div>
+            </div>
           </div>
         </div>
       </S>
 
-      {/* ─── Was drinsteckt ─── */}
+      {/* ─── Du musst nicht warten ─── */}
       <S style={{ marginTop: 56 }}>
-        <h2 style={{ ...h, fontSize: 26, textAlign: "center", margin: "0 0 22px" }}>Was Zwischenraum kann</h2>
-        <div style={{ display: "grid", gap: 14, gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
-          {[
-            ["Tagebuch mit Resonanz", "Schreib, was dich beschäftigt. Zwischenraum antwortet persönlich, erinnert sich an deine Themen und stellt Fragen, die weiterführen."],
-            ["Konflikte, neu gehört", "Beschreib den Streit aus deiner Sicht. Du bekommst zurück: was du eigentlich brauchst, was womöglich beschönigt ist — und einen Weg zur Vermittlung."],
-            ["Das Beziehungsbild", "Der tiefe Blick, wenn beide bereit sind: Was erlebst du, was erlebt dein Gegenüber, was passiert zwischen euch — ohne Urteil, ohne Recht-haben."],
-            ["Dein Spiegel", "Feedback nur für dich: dein Anteil, deine blinden Flecken, deine Stärken, deine nächste Wachstumskante. Sieht niemand außer dir."],
-          ].map(([t, d]) => (
-            <div key={t} style={{ ...st.card, padding: "20px" }}>
-              <h3 style={{ ...h, fontSize: 17, margin: "0 0 6px" }}>{t}</h3>
-              <p style={{ ...st.body, fontSize: 14, margin: 0 }}>{d}</p>
-            </div>
-          ))}
+        <div style={{ textAlign: "center" }}>
+          <h2 style={{ ...h, fontSize: 24, margin: 0 }}>Du musst nicht auf deine Partnerin oder deinen Partner warten.</h2>
+          <p style={{ ...st.body, fontSize: 16, marginTop: 10, maxWidth: 560, marginLeft: "auto", marginRight: "auto" }}>
+            Fang allein an — schreib, ordne, versteh dich selbst besser. Dein Raum ist schon für sich
+            genommen wertvoll. Und wenn deine Partnerin oder dein Partner bereit ist, ist der Raum für
+            euch beide längst da.
+          </p>
+        </div>
+      </S>
+
+      {/* ─── Vertrauen kompakt ─── */}
+      <S style={{ marginTop: 56 }}>
+        <h2 style={{ ...h, fontSize: 26, textAlign: "center", margin: "0 0 18px" }}>Warum du das schreiben kannst, was du sonst für dich behältst</h2>
+        <div style={{ ...st.card, padding: "22px 24px" }}>
+          <div style={{ display: "grid", gap: 10 }}>
+            {[
+              "Getrennte Konten mit eigenem Passwort — technisch erzwungen, nicht nur zugesagt",
+              "Was zwischen euch vermittelt wird, entsteht immer neu formuliert, nie aus euren Originaltexten",
+              "Tiefe gemeinsame Auswertungen nur, wenn beide sie ausdrücklich freigeben",
+              "Server in der EU (Irland)",
+              "Eure Daten trainieren keine KI-Modelle",
+              "Keine Werbung, kein Tracking",
+              "E-Mail-Benachrichtigungen enthalten nie Inhalte — nur den Hinweis, dass es etwas Neues gibt",
+              "Jederzeit vollständig löschbar",
+            ].map((zeile) => (
+              <div key={zeile} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                <span style={{ color: C.ok, fontWeight: 700, flexShrink: 0 }}>✓</span>
+                <span style={{ ...st.body, margin: 0, fontSize: 14.5 }}>{zeile}</span>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 18 }}>
+            <Tag role="A">Dein Raum</Tag>
+            <Tag role="B">Euer Raum</Tag>
+            <span style={{ background: C.paper, color: C.ink, fontSize: 12, fontWeight: 700, letterSpacing: "0.06em", padding: "3px 10px", borderRadius: 999, textTransform: "uppercase", border: `1px solid ${C.line}` }}>
+              Der Zwischenraum
+            </span>
+          </div>
         </div>
       </S>
 

@@ -7,6 +7,7 @@ import SharedChat from "./sections/SharedChat.jsx";
 import AboutYou from "./sections/AboutYou.jsx";
 import Report from "./sections/Report.jsx";
 import Landing from "./Landing.jsx";
+import Invite from "./Invite.jsx";
 import Settings from "./sections/Settings.jsx";
 import AdminDashboard from "./AdminDashboard.jsx";
 
@@ -20,6 +21,7 @@ export default function App() {
   const [membership, setMembership] = useState(undefined);
   const [showAuth, setShowAuth] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [inviteGesehen, setInviteGesehen] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -48,8 +50,15 @@ export default function App() {
   if (session === undefined) return <Shell><p style={st.hint}>Lade …</p></Shell>;
   if (!session) {
     const eingeladen = !!codeAusUrl();
+    // Eingeladene Personen sehen erst die eigene Ansprache (drei Saetze gegen
+    // Ueberwachung, Parteinahme, Verpflichtung), bevor sie ueberhaupt auf ein
+    // Formular treffen — siehe KONZEPT.md Abschnitt 4.
+    if (eingeladen && !inviteGesehen) return <Shell><Invite onStart={() => setInviteGesehen(true)} /></Shell>;
     if (!showAuth && !eingeladen) return <Shell><Landing onStart={() => setShowAuth(true)} /></Shell>;
-    return <AuthScreen onBack={() => setShowAuth(false)} eingeladen={eingeladen} />;
+    return <AuthScreen
+      onBack={() => (eingeladen ? setInviteGesehen(false) : setShowAuth(false))}
+      eingeladen={eingeladen}
+    />;
   }
   if (membership === undefined) return <Shell><p style={st.hint}>Lade …</p></Shell>;
   if (isAdmin) return <AdminDashboard />;
