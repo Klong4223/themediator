@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { supabase, callAI } from "../supabase.js";
 import { C, st, Btn, AIBlock, ErrorNote } from "../ui.jsx";
+import Spiegel from "./Spiegel.jsx";
 
 export const QUESTIONS = [
   // Block A — Konflikt & Bindung
@@ -115,6 +116,7 @@ export default function AboutYou({ membership }) {
           <p style={{ ...st.body, whiteSpace: "pre-wrap" }}>{profile || "(noch leer — dein erster Tagebucheintrag füllt es)"}</p>
         </section>
         <Chronik eintraege={chronik} role={membership.role} />
+        <Spiegel membership={membership} />
       </div>
     );
   }
@@ -122,15 +124,18 @@ export default function AboutYou({ membership }) {
   // 1) Fragebogen noch offen
   if (!row?.completed) {
     return (
-      <div>
-        <ErrorNote>{error}</ErrorNote>
-        <p style={{ ...st.hint, textAlign: "center" }}>
-          Der Fragebogen ist optional — er hilft beim Einstieg, wenn du nicht weißt, wo anfangen.{" "}
-          <button onClick={skip} style={{ background: "none", border: "none", color: C.inkSoft, cursor: "pointer", fontFamily: "inherit", textDecoration: "underline", fontSize: 13.5, padding: 0 }}>
-            Lieber frei schreiben? Überspringen
-          </button>
-        </p>
-        <Wizard membership={membership} busy={busy} onSubmit={submitQuestionnaire} />
+      <div style={{ display: "grid", gap: 20 }}>
+        <div>
+          <ErrorNote>{error}</ErrorNote>
+          <p style={{ ...st.hint, textAlign: "center" }}>
+            Der Fragebogen ist optional — er hilft beim Einstieg, wenn du nicht weißt, wo anfangen.{" "}
+            <button onClick={skip} style={{ background: "none", border: "none", color: C.inkSoft, cursor: "pointer", fontFamily: "inherit", textDecoration: "underline", fontSize: 13.5, padding: 0 }}>
+              Lieber frei schreiben? Überspringen
+            </button>
+          </p>
+          <Wizard membership={membership} busy={busy} onSubmit={submitQuestionnaire} />
+        </div>
+        <Spiegel membership={membership} />
       </div>
     );
   }
@@ -140,23 +145,29 @@ export default function AboutYou({ membership }) {
   const nextIdx = followups.findIndex((f) => !f.a);
   if (followups.length === 0 && !row.interview_done) {
     return (
-      <section style={{ ...st.card, textAlign: "center" }}>
-        <ErrorNote>{error}</ErrorNote>
-        <p style={st.body}>Deine Antworten sind gespeichert, die Auswertung steht noch aus.</p>
-        <div style={{ marginTop: 12 }}>
-          <Btn onClick={() => submitQuestionnaire(row.answers)} disabled={busy}>
-            {busy ? "Zwischenraum wertet aus …" : "Auswertung starten"}
-          </Btn>
-        </div>
-      </section>
+      <div style={{ display: "grid", gap: 20 }}>
+        <section style={{ ...st.card, textAlign: "center" }}>
+          <ErrorNote>{error}</ErrorNote>
+          <p style={st.body}>Deine Antworten sind gespeichert, die Auswertung steht noch aus.</p>
+          <div style={{ marginTop: 12 }}>
+            <Btn onClick={() => submitQuestionnaire(row.answers)} disabled={busy}>
+              {busy ? "Zwischenraum wertet aus …" : "Auswertung starten"}
+            </Btn>
+          </div>
+        </section>
+        <Spiegel membership={membership} />
+      </div>
     );
   }
 
   // 3) KI-Interview: Nachfragen beantworten
   if (!row.interview_done && nextIdx >= 0) {
     return (
-      <Interview membership={membership} followups={followups} nextIdx={nextIdx}
-        busy={busy} error={error} onAnswer={answerFollowup} />
+      <div style={{ display: "grid", gap: 20 }}>
+        <Interview membership={membership} followups={followups} nextIdx={nextIdx}
+          busy={busy} error={error} onAnswer={answerFollowup} />
+        <Spiegel membership={membership} />
+      </div>
     );
   }
 
@@ -176,6 +187,7 @@ export default function AboutYou({ membership }) {
         <p style={{ ...st.body, whiteSpace: "pre-wrap" }}>{profile || "(noch leer)"}</p>
       </section>
       <Chronik eintraege={chronik} role={membership.role} />
+      <Spiegel membership={membership} />
     </div>
   );
 }

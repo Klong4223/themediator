@@ -227,7 +227,13 @@ async function holeHintergrundantwort(responseId: string): Promise<Hintergrundst
   return { fertig: true, fehler: `OpenAI-Lauf beendet mit Status '${data.status}' (${grund}).` };
 }
 
-const VERSION = "2026-08-07a";
+const VERSION = "2026-08-07c";
+
+// Schwelle fuer "bild_duenn" (KONZEPT.md 7.2): je Person mindestens so viele
+// Chronik-Eintraege, sonst zeigt das Frontend vor dem Erstellen eine
+// bestaetigbare Warnung. Chronik statt Zeichenzahl, weil sie Verstandenes
+// zaehlt statt Geschriebenes und deshalb kaum manipulierbar ist.
+const CHRONIK_SCHWELLE = 5;
 
 // Falls ein Lauf nie zu Ende gepollt wird (z.B. beide Browser-Tabs
 // geschlossen, bevor der letzte Poll-Tick kam), bleibt die Zeile sonst fuer
@@ -378,7 +384,7 @@ Antworte nur mit der Impression.`, 2500);
         .select("id, content, ai_feedback, thread_closed")
         .eq("id", body.entry_id).eq("user_id", user.id).single();
       if (!entry) return json({ error: "Eintrag nicht gefunden." }, 404);
-      if (entry.thread_closed) return json({ error: "Dieser Faden ist abgeschlossen — ein neuer Eintrag oeffnet einen neuen." }, 400);
+      if (entry.thread_closed) return json({ error: "Dieser Faden ist abgeschlossen — ein neuer Eintrag öffnet einen neuen." }, 400);
 
       const text = String(body.content ?? "").slice(0, 4000).trim();
       if (!text) return json({ error: "Leere Antwort." }, 400);
@@ -593,6 +599,60 @@ ${partnerProfile}`);
       return json({ ok: true, gate_open: open, readiness: begruendung });
     }
 
+    // ─── Der naechste Schritt: Meilensteine + Begruendung im Klartext ─
+    // KONZEPT.md 6.2/7.2. Ersetzt das verworfene Barometer: keine Fleiss-
+    // Masse ueber die andere Person, nur tatsaechliche Zustaende. Der
+    // Wortlaut entsteht ausschliesslich hier, damit er nicht zwischen
+    // Oberflaechen auseinanderlaeuft.
+    if (body.action === "meilensteine") {
+      const { data: consentsRaw } = await admin.from("couple_members")
+        .select("user_id, report_consent").eq("couple_id", member.couple_id);
+      const cons = consentsRaw ?? [];
+      const freigabeIch = !!cons.find((c) => c.user_id === user.id)?.report_consent;
+      const freigabePartner = partner ? !!cons.find((c) => c.user_id === partner.user_id)?.report_consent : false;
+
+      const { data: state } = await admin.from("couple_state")
+        .select("gate_open, readiness").eq("couple_id", member.couple_id).maybeSingle();
+      const chatOffen = !!state?.gate_open;
+
+      const chronikAnzahl = async (uid: string) => {
+        const { count } = await admin.from("chronicle")
+          .select("id", { count: "exact", head: true }).eq("user_id", uid);
+        return count ?? 0;
+      };
+      const bildDuenn = !partner || !(
+        (await chronikAnzahl(user.id)) >= CHRONIK_SCHWELLE &&
+        (await chronikAnzahl(partner.user_id)) >= CHRONIK_SCHWELLE
+      );
+
+      // ACHTUNG: Diese Texte gehen direkt an die Oberflaeche, sind KEIN
+      // Prompt an das Modell -- deshalb hier normale deutsche Umlaute
+      // verwenden, anders als sonst in dieser Datei ueblich.
+      let naechster: "partner_fehlt" | "freigabe_fehlt" | null = null;
+      let grund = "";
+      if (!partner) {
+        naechster = "partner_fehlt";
+        const { data: couple } = await admin.from("couples").select("invite_code").eq("id", member.couple_id).maybeSingle();
+        grund = `Der Zwischenraum öffnet sich, sobald deine Partnerin oder dein Partner beigetreten ist. Euer Einladungscode: ${couple?.invite_code ?? "-"}`;
+      } else if (!(freigabeIch && freigabePartner)) {
+        naechster = "freigabe_fehlt";
+        const nameP = partner.display_name ?? "die andere Seite";
+        if (!freigabeIch && !freigabePartner) grund = "Für ein Beziehungsbild müsst ihr beide freigeben — noch hat keiner von euch freigegeben.";
+        else if (!freigabeIch) grund = `${nameP} hat bereits freigegeben — deine Freigabe steht noch aus.`;
+        else grund = `Du hast freigegeben — ${nameP}s Freigabe steht noch aus.`;
+      }
+
+      return json({
+        naechster, grund,
+        partner_da: !!partner,
+        freigabe_ich: freigabeIch,
+        freigabe_partner: freigabePartner,
+        bild_duenn: bildDuenn,
+        chat_offen: chatOffen,
+        chat_grund: state?.readiness ?? "",
+      });
+    }
+
     // ─── Beziehungsbild: Stufe 1 anstossen, Rest per Polling ─
     if (body.action === "report") {
       if (!partner) return json({ error: "Deine Partnerin oder dein Partner ist noch nicht beigetreten." }, 400);
@@ -711,7 +771,7 @@ Antworte nur mit dem Bericht (drei Teile mit Ueberschriften).`;
         .select("user_id, report_consent").eq("couple_id", member.couple_id);
       const all = consents ?? [];
       if (!(all.length === 2 && all.every((m) => m.report_consent))) {
-        return json({ error: "Der Spiegel nutzt denselben Freigabe-Rahmen wie das Beziehungsbild: beide muessen ihr Material freigegeben haben." }, 403);
+        return json({ error: "Der Spiegel nutzt denselben Freigabe-Rahmen wie das Beziehungsbild: beide müssen ihr Material freigegeben haben." }, 403);
       }
 
       await haengendeLaeufeAufraeumen(admin, "mirrors", member.couple_id);
@@ -828,7 +888,7 @@ Antworte nur mit dem Spiegel-Text.`;
       const rohtext = body.message != null ? String(body.message).slice(0, 4000).trim() : null;
       if (rohtext !== null) {
         if (!rohtext) return json({ error: "Leere Nachricht." }, 400);
-        if (!istJuengstes) return json({ error: "Nur das juengste Dokument nimmt neue Nachrichten an." }, 403);
+        if (!istJuengstes) return json({ error: "Nur das jüngste Dokument nimmt neue Nachrichten an." }, 403);
         // WICHTIG: Erst speichern, DANN das Modell befragen. Scheitert der
         // Modellaufruf, ist die Eingabe der Person trotzdem nie verloren.
         await admin.from("doc_chats").insert({
@@ -891,7 +951,7 @@ Antworte nur mit deiner Nachricht.`;
       const { data: verlauf } = await admin.from("doc_chats")
         .select("sender, content").eq("doc_id", docId).eq("user_id", user.id)
         .order("created_at", { ascending: true });
-      if (!verlauf?.length) return json({ error: "Noch kein Gespraech zum Teilen." }, 400);
+      if (!verlauf?.length) return json({ error: "Noch kein Gespräch zum Teilen." }, 400);
 
       const nameMe = member.display_name ?? "du";
       const dialogText = verlauf.map((m) => `${m.sender === "user" ? nameMe : "Zwischenraum"}: ${m.content}`).join("\n");
@@ -1210,9 +1270,9 @@ function betreff(kind: string): string {
 function textFor(kind: string): string {
   switch (kind) {
     case "chat": return "Es gibt eine neue Nachricht in eurem gemeinsamen Raum.";
-    case "gate": return "Euer gemeinsamer Raum hat sich geoeffnet - ihr koennt jetzt moderiert miteinander sprechen.";
+    case "gate": return "Euer gemeinsamer Raum hat sich geöffnet - ihr könnt jetzt moderiert miteinander sprechen.";
     case "report": return "Euer Beziehungsbild wurde erstellt und wartet auf dich.";
-    case "mirror": return "Dein persoenlicher Spiegel wurde erstellt.";
+    case "mirror": return "Dein persönlicher Spiegel wurde erstellt.";
     case "partner_joined": return "Deine Partnerin oder dein Partner ist eurem Raum beigetreten.";
     default: return "Es gibt Neues in eurem Zwischenraum.";
   }
@@ -1257,7 +1317,7 @@ async function benachrichtigeBeiFreigabe(
 async function sendMail(to: string, subject: string, body: string) {
   const key = Deno.env.get("RESEND_API_KEY");
   if (!key) { console.error("RESEND_API_KEY fehlt - keine Mail versendet."); return; }
-  const text = `${body}\n\nHier geht es weiter: ${APP_URL}\n\n--\nDu bekommst diese Nachricht, weil du Zwischenraum nutzt.\nHaeufigkeit aendern oder abbestellen: ${APP_URL} (Bereich "Ueber dich" > Benachrichtigungen)\nAus Datenschutzgruenden stehen in unseren E-Mails niemals Inhalte.`;
+  const text = `${body}\n\nHier geht es weiter: ${APP_URL}\n\n--\nDu bekommst diese Nachricht, weil du Zwischenraum nutzt.\nHäufigkeit ändern oder abbestellen: ${APP_URL} (Bereich "Über dich" > Benachrichtigungen)\nAus Datenschutzgründen stehen in unseren E-Mails niemals Inhalte.`;
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: { "content-type": "application/json", "authorization": `Bearer ${key}` },

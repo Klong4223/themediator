@@ -237,9 +237,16 @@ function Onboarding({ session, onDone }) {
   );
 }
 
-/* ─── Hauptansicht mit drei Sektionen ───────────────────── */
+/* ─── Hauptansicht: drei Raeume ──────────────────────────
+   KONZEPT.md Abschnitt 1: Dein Raum / Der Zwischenraum / Euer Raum.
+   Ein Tab = ein Raum = ein Vertraulichkeitsversprechen. "Dein Raum"
+   buendelt drei bisher eigenstaendige Tabs (Ueber dich, Tagebuch,
+   Themen & Konflikte) unter einer Unter-Navigation, weil sie alle
+   ausschliesslich dir gehoeren. Einstellungen ist kein Raum, sondern
+   Utility, und bleibt deshalb ausserhalb des Raum-Modells. */
 function Main({ session, membership }) {
-  const [tab, setTab] = useState("diary");
+  const [raum, setRaum] = useState("dein");
+  const [deinTab, setDeinTab] = useState("tagebuch");
   const [state, setState] = useState(null);
 
   async function loadState() {
@@ -250,13 +257,15 @@ function Main({ session, membership }) {
 
   const gateOpen = !!state?.gate_open;
 
-  const tabs = [
-    ["about", "Über dich"],
-    ["diary", "Tagebuch"],
-    ["conflicts", "Themen & Konflikte"],
-    ["chat", gateOpen ? "Gemeinsam" : "Gemeinsam 🔒"],
-    ["report", "Beziehungsbild"],
-    ["settings", "⚙ Einstellungen"],
+  const raeume = [
+    ["dein", "Dein Raum", C.a],
+    ["zwischenraum", "Der Zwischenraum", C.ink],
+    ["euer", gateOpen ? "Euer Raum" : "Euer Raum 🔒", C.b],
+  ];
+  const deinTabs = [
+    ["tagebuch", "Tagebuch"],
+    ["ueber_dich", "Über dich"],
+    ["konflikte", "Themen & Konflikte"],
   ];
 
   return (
@@ -272,18 +281,28 @@ function Main({ session, membership }) {
               Einladungscode: <strong>{membership.couples.invite_code}</strong>
             </span>
           )}
+          <button onClick={() => setRaum("einstellungen")} title="Einstellungen"
+            style={{
+              background: raum === "einstellungen" ? C.ink : "transparent",
+              color: raum === "einstellungen" ? "#fff" : C.inkSoft,
+              border: `1px solid ${raum === "einstellungen" ? C.ink : C.line}`,
+              borderRadius: 999, width: 36, height: 36, fontSize: 16,
+              cursor: "pointer", fontFamily: "inherit",
+            }}>
+            ⚙
+          </button>
           <Btn variant="ghost" onClick={() => supabase.auth.signOut()}>Abmelden</Btn>
         </div>
       </div>
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 22, flexWrap: "wrap" }}>
-        {tabs.map(([id, label]) => (
-          <button key={id} onClick={() => setTab(id)}
+      <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+        {raeume.map(([id, label, farbe]) => (
+          <button key={id} onClick={() => setRaum(id)}
             style={{
-              background: tab === id ? C.ink : "transparent",
-              color: tab === id ? "#fff" : C.inkSoft,
-              border: `1px solid ${tab === id ? C.ink : C.line}`,
-              borderRadius: 999, padding: "8px 18px", fontSize: 14, fontWeight: 600,
+              background: raum === id ? farbe : "transparent",
+              color: raum === id ? "#fff" : C.inkSoft,
+              border: `1px solid ${raum === id ? farbe : C.line}`,
+              borderRadius: 999, padding: "9px 20px", fontSize: 14.5, fontWeight: 600,
               cursor: "pointer", fontFamily: "inherit",
             }}>
             {label}
@@ -291,12 +310,30 @@ function Main({ session, membership }) {
         ))}
       </div>
 
-      {tab === "about" && <AboutYou membership={membership} />}
-      {tab === "diary" && <Diary membership={membership} />}
-      {tab === "conflicts" && <Conflicts membership={membership} />}
-      {tab === "chat" && <SharedChat membership={membership} state={state} refreshState={loadState} />}
-      {tab === "report" && <Report membership={membership} />}
-      {tab === "settings" && <Settings membership={membership} onChanged={loadState} />}
+      {raum === "dein" && (
+        <div style={{ display: "flex", gap: 6, marginBottom: 22, flexWrap: "wrap" }}>
+          {deinTabs.map(([id, label]) => (
+            <button key={id} onClick={() => setDeinTab(id)}
+              style={{
+                background: deinTab === id ? C.aSoft : "transparent",
+                color: deinTab === id ? C.a : C.inkSoft,
+                border: `1px solid ${deinTab === id ? C.a : C.line}`,
+                borderRadius: 999, padding: "6px 15px", fontSize: 13.5, fontWeight: 600,
+                cursor: "pointer", fontFamily: "inherit",
+              }}>
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+      {raum !== "dein" && <div style={{ marginBottom: 22 }} />}
+
+      {raum === "dein" && deinTab === "tagebuch" && <Diary membership={membership} />}
+      {raum === "dein" && deinTab === "ueber_dich" && <AboutYou membership={membership} />}
+      {raum === "dein" && deinTab === "konflikte" && <Conflicts membership={membership} />}
+      {raum === "zwischenraum" && <Report membership={membership} />}
+      {raum === "euer" && <SharedChat membership={membership} state={state} refreshState={loadState} />}
+      {raum === "einstellungen" && <Settings membership={membership} onChanged={loadState} />}
     </Shell>
   );
 }
