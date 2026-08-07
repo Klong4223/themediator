@@ -142,11 +142,17 @@ Fortsetzung des Lesens.**
   Tagebuch-Dialogfäden (`diary_replies`) bereits. Kein freischwebender
   Chatbot-Tab. Dadurch bleibt immer klar, *worüber* gesprochen wird, und
   alte Berichte behalten ihre Gespräche als Verlauf.
-- **Raumzugehörigkeit explizit machen:** Auch das Gespräch über das
-  *gemeinsame* Beziehungsbild ist ein **privates** Gespräch. Das ist die
-  eine Stelle, an der Intuition allein nicht reicht — hier muss es
-  dastehen: *„Dieses Gespräch ist nur deins. Kathrin sieht weder deine
-  Fragen noch die Antworten."*
+- **Raumzugehörigkeit strukturell machen, nicht nur behauptet.** Auch das
+  Gespräch über das *gemeinsame* Beziehungsbild ist ein **privates**
+  Gespräch — und liegt deshalb physisch in „Dein Raum", nicht in „Der
+  Zwischenraum". Ursprünglich war hier nur ein Hinweistext vorgesehen
+  (*„Dieses Gespräch ist nur deins"*); auf Wunsch umgesetzt als tatsächlicher
+  Umzug: Der Bericht selbst bleibt im Zwischenraum lesbar, das Gespräch
+  darüber lebt unter „Über dich" (`BeziehungsbildGespraech.jsx`), mit einem
+  knappen Datumsverweis statt Volltext-Duplikat. Vom Bericht aus führt ein
+  klickbarer Verweis („Was das in dir auslöst, besprichst du in **Dein
+  Raum**") direkt dorthin. Der Ort allein beantwortet die Vertrauensfrage,
+  kein Text muss sie mehr erklären.
 - **Die Grenze als Charakter, nicht als Fehlermeldung.** Im Dialog wird
   „Was hat sie denn wirklich geschrieben?" kommen — garantiert, und viel
   häufiger als bei einem statischen Bericht. Die Antwort darf nie technisch
@@ -536,10 +542,12 @@ nicht wie die Position einer Seite.
 | Datei | Änderung |
 |---|---|
 | `src/App.jsx` | Tabs auf drei Räume; Weiche für `?code=` vor dem Login (existiert bereits als Leseroutine in Zeile 14) |
-| `src/sections/DocChat.jsx` | **neu** — wiederverwendbarer Gesprächsfaden, unter Bericht und Spiegel eingebunden |
+| `src/sections/DocChat.jsx` | **neu** — wiederverwendbarer Gesprächsfaden (Eingabe, Verlauf, Brücke) |
 | `src/sections/NaechsterSchritt.jsx` | **neu** — die Meilenstein-Karte, gespeist aus der `meilensteine`-Aktion |
-| `src/sections/Report.jsx` | Spiegel herauslösen; Phasenanzeige aus `stage`; Zeitleiste; Warnhinweis bei dünnem Material |
-| `src/sections/AboutYou.jsx` | Spiegel samt Gespräch aufnehmen |
+| `src/sections/Spiegel.jsx` | **neu** — aus Report.jsx extrahiert: Consent, Polling, Generierung, `DocChat` |
+| `src/sections/BeziehungsbildGespraech.jsx` | **neu** — Verweis + `DocChat` je Bericht, lebt in „Dein Raum" (nicht im Zwischenraum, siehe Stufe 3) |
+| `src/sections/Report.jsx` | Spiegel und dessen Gespräch herauslösen; `NaechsterSchritt`; Warnhinweis bei dünnem Material; klickbarer Verweis zum Gespräch statt `DocChat` direkt eingebunden. Phasenanzeige aus `stage` steht noch aus |
+| `src/sections/AboutYou.jsx` | `Spiegel` und `BeziehungsbildGespraech` an allen vier Zuständen einbinden |
 | `src/Landing.jsx` | Dramaturgie nach Abschnitt 3 |
 | `src/Invite.jsx` | **neu** — Ansicht für eingeladene Personen nach Abschnitt 4 |
 
@@ -555,10 +563,13 @@ Ansprache an die eingeladene Person; ohne Code unverändertes Verhalten.
 **Startseite** — Alle acht Sektionen aus Abschnitt 3 vorhanden; beide
 Beispiele sichtbar als erfunden gekennzeichnet.
 
-**Verankerte Gespräche** — Nachricht unter Bericht und Spiegel möglich, KI
-antwortet, Verlauf bleibt nach Neuladen erhalten. Ein zweiter Account sieht
-die Gespräche des ersten nicht (RLS praktisch geprüft, nicht nur im UI).
-Gespräche an älteren Berichten sind lesbar, aber schreibgeschützt.
+**Verankerte Gespräche** — Nachricht zu Bericht und Spiegel möglich, KI
+antwortet, Verlauf bleibt nach Neuladen erhalten. Beide Gespräche liegen
+strukturell in „Dein Raum" (Spiegel-Gespräch direkt dort, Beziehungsbild-
+Gespräch über einen kompakten Verweis statt Volltext-Duplikat), nicht im
+Zwischenraum, wo nur der Bericht selbst lesbar bleibt. Ein zweiter Account
+sieht die Gespräche des ersten nicht (RLS praktisch geprüft, nicht nur im
+UI). Gespräche an älteren Berichten sind lesbar, aber schreibgeschützt.
 
 **Brücke** — Knopf erzeugt eine Eröffnung im gemeinsamen Raum, die
 erkennbar neu formuliert ist und die Herkunftskennzeichnung trägt. Der

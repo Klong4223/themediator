@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { supabase, callAI } from "../supabase.js";
 import { C, st, Btn, AIBlock, ErrorNote } from "../ui.jsx";
 import Spiegel from "./Spiegel.jsx";
+import BeziehungsbildGespraech from "./BeziehungsbildGespraech.jsx";
 
 export const QUESTIONS = [
   // Block A — Konflikt & Bindung
@@ -117,6 +118,7 @@ export default function AboutYou({ membership }) {
         </section>
         <Chronik eintraege={chronik} role={membership.role} />
         <Spiegel membership={membership} />
+        <BeziehungsbildGespraech membership={membership} />
       </div>
     );
   }
@@ -136,6 +138,7 @@ export default function AboutYou({ membership }) {
           <Wizard membership={membership} busy={busy} onSubmit={submitQuestionnaire} />
         </div>
         <Spiegel membership={membership} />
+        <BeziehungsbildGespraech membership={membership} />
       </div>
     );
   }
@@ -156,6 +159,7 @@ export default function AboutYou({ membership }) {
           </div>
         </section>
         <Spiegel membership={membership} />
+        <BeziehungsbildGespraech membership={membership} />
       </div>
     );
   }
@@ -167,6 +171,7 @@ export default function AboutYou({ membership }) {
         <Interview membership={membership} followups={followups} nextIdx={nextIdx}
           busy={busy} error={error} onAnswer={answerFollowup} />
         <Spiegel membership={membership} />
+        <BeziehungsbildGespraech membership={membership} />
       </div>
     );
   }
@@ -188,6 +193,7 @@ export default function AboutYou({ membership }) {
       </section>
       <Chronik eintraege={chronik} role={membership.role} />
       <Spiegel membership={membership} />
+      <BeziehungsbildGespraech membership={membership} />
     </div>
   );
 }

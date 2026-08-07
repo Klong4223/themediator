@@ -331,7 +331,9 @@ function Main({ session, membership }) {
       {raum === "dein" && deinTab === "tagebuch" && <Diary membership={membership} />}
       {raum === "dein" && deinTab === "ueber_dich" && <AboutYou membership={membership} />}
       {raum === "dein" && deinTab === "konflikte" && <Conflicts membership={membership} />}
-      {raum === "zwischenraum" && <Report membership={membership} />}
+      {raum === "zwischenraum" && (
+        <Report membership={membership} onGespraech={() => { setRaum("dein"); setDeinTab("ueber_dich"); }} />
+      )}
       {raum === "euer" && <SharedChat membership={membership} state={state} refreshState={loadState} />}
       {raum === "einstellungen" && <Settings membership={membership} onChanged={loadState} />}
     </Shell>

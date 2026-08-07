@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { supabase, callAI } from "../supabase.js";
 import { C, st, Btn, Convergence, ErrorNote } from "../ui.jsx";
-import DocChat from "./DocChat.jsx";
 import NaechsterSchritt from "./NaechsterSchritt.jsx";
 
 // Seit der Umstellung auf OpenAIs Responses-API mit background:true gibt es
@@ -18,7 +17,7 @@ const dauertUngewoehnlichLang = (zeile) =>
   zeile.status === "running" &&
   Date.now() - new Date(zeile.created_at).getTime() > UNGEWOEHNLICH_LANGE_MS;
 
-export default function Report({ membership }) {
+export default function Report({ membership, onGespraech }) {
   const [myConsent, setMyConsent] = useState(false);
   const [partnerConsent, setPartnerConsent] = useState(false);
   const [partnerJoined, setPartnerJoined] = useState(false);
@@ -175,7 +174,7 @@ export default function Report({ membership }) {
         )}
       </section>
 
-      {reports.map((r, i) => (
+      {reports.map((r) => (
         <section key={r.id} style={{ ...st.card, borderTop: `4px solid ${C.ink}` }}>
           <span style={{ fontSize: 12, color: C.inkSoft }}>
             {new Date(r.created_at).toLocaleString("de-DE", { dateStyle: "long", timeStyle: "short" })}
@@ -207,7 +206,17 @@ export default function Report({ membership }) {
           ) : (
             <>
               <p style={{ ...st.body, whiteSpace: "pre-wrap", marginTop: 8 }}>{r.content}</p>
-              <DocChat kind="report" docId={r.id} canWrite={i === 0} />
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${C.line}` }}>
+                <p style={{ ...st.hint, margin: 0 }}>
+                  Was das in dir auslöst, besprichst du in{" "}
+                  {onGespraech ? (
+                    <button onClick={onGespraech}
+                      style={{ background: "none", border: "none", color: C.a, cursor: "pointer", fontFamily: "inherit", fontSize: "inherit", textDecoration: "underline", padding: 0 }}>
+                      Dein Raum
+                    </button>
+                  ) : "Dein Raum"} — nur du siehst dieses Gespräch.
+                </p>
+              </div>
             </>
           )}
         </section>
