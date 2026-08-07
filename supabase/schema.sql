@@ -527,3 +527,35 @@ revoke select on public.mirrors from authenticated, anon;
 grant select (id, couple_id, user_id, content, created_at, status,
               error_msg, stage, openai_response_id)
   on public.mirrors to authenticated, anon;
+
+-- ─────────────────────────────────────────────────────────────
+-- Delta 2026-08-07d: fehlende Tabelle `chronicle` nachtragen.
+--
+-- Sie existiert seit Langem in Produktion (siehe getChronik/
+-- updateProfile in der Edge Function), ist aber nie in dieser Datei
+-- gelandet -- ein Drift, der beim Planen der Inhaltsverschluesselung
+-- auffiel. Struktur exakt aus der Live-Datenbank uebernommen.
+-- RLS nach dem Muster der Geschwistertabellen (probes,
+-- diary_replies): nur eigene Zeilen lesbar, keine Insert/Update-
+-- Policy -- geschrieben wird ausschliesslich von der Edge Function
+-- per Service Role.
+--
+-- `source_kind` setzt der aktuelle Code nicht, die Spalte lebt vom
+-- Default. Bewusst so uebernommen statt entfernt: sie ist in
+-- Produktion vorhanden und not null.
+-- ─────────────────────────────────────────────────────────────
+
+create table if not exists chronicle (
+  id uuid primary key default gen_random_uuid(),
+  couple_id uuid not null references couples(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  observation text not null,
+  source_kind text not null default 'diary',
+  created_at timestamptz not null default now()
+);
+
+alter table chronicle enable row level security;
+
+drop policy if exists "chronicle: nur eigene lesen" on chronicle;
+create policy "chronicle: nur eigene lesen" on chronicle
+  for select using (user_id = auth.uid());

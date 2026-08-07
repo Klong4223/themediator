@@ -260,7 +260,141 @@ async function tokenHash(token: string): Promise<string> {
   return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-const VERSION = "2026-08-07e";
+// Bewusst VOR den Verschluesselungs-Helfern deklariert: die nutzen VERSION
+// in ihren Log-Ausgaben. Im Funktionsrumpf waere das zur Laufzeit zwar
+// unkritisch, aber Nutzung-vor-Deklaration hat hier schon einmal einen
+// Produktionsfehler verursacht (siehe CLAUDE.md) -- also gar nicht erst.
+const VERSION = "2026-08-07g";
+
+// ─── Verschluesselung ruhender Inhalte (CLAUDE.md Backlog Punkt 7) ──
+// AES-256-GCM ueber Deno's natives crypto.subtle -- kein externes Paket,
+// gleicher Stil wie die PIN-/Token-Hashes oben. Der Schluessel liegt
+// ausschliesslich als Edge-Function-Secret, NIE in Postgres: damit ist
+// der Inhalt gegen Table-Editor, SQL-Zugriff und Datenbank-Lecks
+// geschuetzt. Keine Nulleinsicht -- das Modell verarbeitet zwangslaeufig
+// Klartext -- aber genau diese Grenze ist so auch nach aussen formuliert.
+//
+// Format: zr1:<Fingerprint>:<base64 IV>:<base64 Ciphertext>
+//   zr1         Formatversion, macht ein spaeteres Verfahren unterscheidbar
+//   Fingerprint erste 16 Hexzeichen von SHA-256(Schluessel), NICHT geheim.
+//               Macht erkennbar, ob eine Zeile ueberhaupt zum geladenen
+//               Schluessel gehoert -- Grundlage fuer spaetere Rotation.
+//   Das GCM-Auth-Tag steckt bereits im Ciphertext, braucht kein Feld.
+//
+// Der Praefix macht die Erkennung exakt statt heuristisch: alles ohne
+// "zr1:" ist Alt-Klartext und wird unveraendert durchgereicht. Deshalb
+// ist ein Code-Deploy fuer sich allein schon unschaedlich -- alte Zeilen
+// bleiben lesbar, neue Schreibvorgaenge sind verschluesselt.
+const ENC_PRAEFIX = "zr1";
+
+function zuHex(b: Uint8Array): string {
+  return Array.from(b).map((x) => x.toString(16).padStart(2, "0")).join("");
+}
+function zuBase64(b: Uint8Array): string {
+  let s = "";
+  for (const x of b) s += String.fromCharCode(x);
+  return btoa(s);
+}
+// Liefert bewusst einen ArrayBuffer statt Uint8Array: crypto.subtle
+// erwartet BufferSource, und neuere TypeScript-Fassungen akzeptieren ein
+// Uint8Array<ArrayBufferLike> dort nicht mehr ohne Umweg.
+function ausBase64(s: string): ArrayBuffer {
+  const bin = atob(s);
+  const buf = new ArrayBuffer(bin.length);
+  const view = new Uint8Array(buf);
+  for (let i = 0; i < bin.length; i++) view[i] = bin.charCodeAt(i);
+  return buf;
+}
+
+let _encKey: CryptoKey | null = null;
+let _encFp: string | null = null;
+
+async function encSchluessel(): Promise<{ key: CryptoKey; fp: string }> {
+  if (_encKey && _encFp) return { key: _encKey, fp: _encFp };
+  const roh = Deno.env.get("CONTENT_ENC_KEY");
+  if (!roh) {
+    throw new Error("Secret CONTENT_ENC_KEY ist nicht gesetzt (Supabase > Edge Functions > Secrets).");
+  }
+  const bytes = ausBase64(roh);
+  if (bytes.byteLength !== 32) {
+    throw new Error(`CONTENT_ENC_KEY hat ${bytes.byteLength} Bytes, erwartet werden 32 (base64 aus 32 Zufallsbytes).`);
+  }
+  _encKey = await crypto.subtle.importKey("raw", bytes, "AES-GCM", false, ["encrypt", "decrypt"]);
+  // Fingerprint bewusst ueber den base64-String, nicht ueber die Rohbytes --
+  // so stimmt er mit dem Digest ueberein, den `supabase secrets list`
+  // anzeigt, und laesst sich ohne Kenntnis des Schluessels abgleichen.
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(roh));
+  _encFp = zuHex(new Uint8Array(digest)).slice(0, 16);
+  return { key: _encKey, fp: _encFp };
+}
+
+function istVerschluesselt(wert: string): boolean {
+  return wert.startsWith(`${ENC_PRAEFIX}:`);
+}
+
+// NULL und "" bleiben unveraendert -- reports.content/mirrors.content sind
+// beim Anlegen bewusst leer, und probes.a ist NULL bis zur Antwort
+// (das Frontend filtert per `.is("a", null)` genau darauf).
+async function verschluesseln(klartext: string | null | undefined): Promise<string | null> {
+  if (klartext == null || klartext === "") return klartext ?? null;
+  const { key, fp } = await encSchluessel();
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv }, key, new TextEncoder().encode(klartext),
+  );
+  return `${ENC_PRAEFIX}:${fp}:${zuBase64(iv)}:${zuBase64(new Uint8Array(ct))}`;
+}
+
+// WICHTIG fuer alle Fehlertexte hier: niemals den Wert selbst (weder
+// Klartext noch Ciphertext) in die Meldung aufnehmen. Fehler landen im
+// Supabase-Log und in der Antwort an den Client -- ein Fragment dort waere
+// genau der Klartextpfad, den diese Verschluesselung schliessen soll.
+// Fingerprints sind unbedenklich, die sind per Definition nicht geheim.
+async function entschluesseln(wert: string | null | undefined): Promise<string | null> {
+  if (wert == null || wert === "") return wert ?? null;
+  if (!istVerschluesselt(wert)) return wert; // Alt-Klartext, unveraendert
+  const teile = wert.split(":");
+  if (teile.length !== 4) {
+    throw new Error("Verschluesselter Wert hat ein unerwartetes Format (erwartet: zr1:fp:iv:ct).");
+  }
+  const [, fpZeile, ivB64, ctB64] = teile;
+  const { key, fp } = await encSchluessel();
+  if (fpZeile !== fp) {
+    // Bewusst KEIN Entschluesselungsversuch mit dem falschen Schluessel:
+    // der scheiterte generisch und saehe aus wie Datenkorruption, obwohl
+    // die Daten intakt sind und nur der Schluessel nicht passt.
+    throw new Error(
+      `Dieser Wert wurde mit einem anderen Schluessel verschluesselt ` +
+      `(Zeile: ${fpZeile}, aktuell geladen: ${fp}). CONTENT_ENC_KEY passt nicht zu diesen Daten.`,
+    );
+  }
+  try {
+    const klar = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: ausBase64(ivB64) }, key, ausBase64(ctB64),
+    );
+    return new TextDecoder().decode(klar);
+  } catch {
+    throw new Error("Entschluesselung fehlgeschlagen (Daten beschaedigt oder unvollstaendig).");
+  }
+}
+
+// Tolerante Variante fuer aggregierte Listen, die in einen Prompt fliessen
+// (Chronik, Material fuer Beziehungsbild/Spiegel): Dort stehen Dutzende
+// Zeilen nebeneinander, und eine einzelne unlesbare darf nicht die ganze
+// Analyse verhindern. Sie wird durch einen erkennbaren Marker ersetzt und
+// im Log vermerkt. An Stellen, wo eine Person genau EINEN eigenen Text
+// ansieht, gilt weiterhin die strenge Variante oben -- dort ist ein
+// stiller Platzhalter falsch, da muss die echte Ursache sichtbar werden.
+async function entschluesselnTolerant(
+  wert: string | null | undefined, wo: string,
+): Promise<string> {
+  try {
+    return (await entschluesseln(wert)) ?? "";
+  } catch (e) {
+    console.error(`[ai ${VERSION}] Entschluesselung fehlgeschlagen bei ${wo}: ${e instanceof Error ? e.message : String(e)}`);
+    return "[Dieser Eintrag konnte nicht gelesen werden.]";
+  }
+}
 
 // Schwelle fuer "bild_duenn" (KONZEPT.md 7.2): je Person mindestens so viele
 // Chronik-Eintraege, sonst zeigt das Frontend vor dem Erstellen eine
@@ -289,7 +423,25 @@ const MAIL_FROM = "Zwischenraum <hallo@zwischenraum.work>";
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   const url = new URL(req.url);
-  if (url.searchParams.get("ping") === "1") return json({ ok: true, version: VERSION, provider: PROVIDER, key_set: !!Deno.env.get("OPENAI_API_KEY") });
+  if (url.searchParams.get("ping") === "1") {
+    // Verschluesselungs-Schluessel mitmelden -- aber nur, OB er da ist und
+    // welchen Fingerprint er hat, nie den Wert. Der Fingerprint ist
+    // dieselbe Zahl, die `supabase secrets list` als Digest zeigt: damit
+    // laesst sich von aussen pruefen, dass die Function wirklich den
+    // erwarteten Schluessel geladen hat, ohne ihn je zu offenbaren.
+    let enc: { gesetzt: boolean; fingerprint?: string; fehler?: string };
+    try {
+      const { fp } = await encSchluessel();
+      enc = { gesetzt: true, fingerprint: fp };
+    } catch (e) {
+      enc = { gesetzt: false, fehler: e instanceof Error ? e.message : String(e) };
+    }
+    return json({
+      ok: true, version: VERSION, provider: PROVIDER,
+      key_set: !!Deno.env.get("OPENAI_API_KEY"),
+      enc_key: enc,
+    });
+  }
   try {
     const admin = createClient(
       Deno.env.get("SUPABASE_URL")!,
@@ -357,6 +509,111 @@ Deno.serve(async (req) => {
       });
     }
 
+    // ─── Einmaliger Verschluesselungs-Sweep (Welle 1) ──────────
+    // Verschluesselt Bestandszeilen, die noch Klartext sind. Steht
+    // bewusst VOR dem couple_members-Lookup: das Admin-Konto gehoert zu
+    // keinem Paar-Raum und wuerde dort mit "Kein Paar-Raum." abprallen
+    // (gleicher Grund wie bei admin_stats).
+    //
+    // Doppelt abgesichert (eigenes Secret UND Admin-Konto), weil diese
+    // Aktion als einzige massenhaft an fremden Daten schreibt.
+    //
+    // Idempotent ohne eigenes "migriert"-Flag: der zr1-Praefix sagt
+    // selbst, ob eine Zeile schon verschluesselt ist. Ein abgebrochener
+    // Lauf kann einfach erneut gestartet werden.
+    //
+    // Gegen Nebenlaeufigkeit: Das Update ist an den GELESENEN Altwert
+    // gebunden (.eq(spalte, alt)). Schreibt parallel ein regulaerer
+    // Vorgang (updateProfile ist ein Read-Modify-Write ueber einen
+    // minutenlangen Modellaufruf hinweg!), trifft das Update ins Leere
+    // statt frische Daten zu ueberschreiben -- solche Zeilen werden als
+    // "nachtrag_noetig" gezaehlt und beim naechsten Lauf erledigt.
+    if (body.action === "enc_migrate") {
+      if (!Deno.env.get("MIGRATION_SECRET") || body.secret !== Deno.env.get("MIGRATION_SECRET")) {
+        return json({ error: "Kein Zugriff." }, 403);
+      }
+      const { data: adminRow } = await admin.from("admins")
+        .select("user_id").eq("user_id", user.id).maybeSingle();
+      if (!adminRow) return json({ error: "Kein Zugriff." }, 403);
+
+      const trockenlauf = body.trockenlauf !== false; // Standard: nur zaehlen
+      const ZIELE: Array<{ tabelle: string; spalten: string[] }> = [
+        { tabelle: "ai_profiles", spalten: ["profile"] },
+        { tabelle: "chronicle", spalten: ["observation"] },
+        { tabelle: "reports", spalten: ["notizen"] },
+        { tabelle: "mirrors", spalten: ["notizen"] },
+      ];
+
+      const bericht: Record<string, unknown> = {};
+      for (const { tabelle, spalten } of ZIELE) {
+        // ai_profiles hat keinen eigenen id-Schluessel, sondern
+        // (couple_id, user_id) -- deshalb je Tabelle der passende Filter.
+        const schluessel = tabelle === "ai_profiles" ? ["couple_id", "user_id"] : ["id"];
+        const { data: zeilen, error } = await admin.from(tabelle)
+          .select([...schluessel, ...spalten].join(", "));
+        if (error) { bericht[tabelle] = { fehler: error.message }; continue; }
+
+        let verarbeitet = 0, uebersprungen = 0, nachtragNoetig = 0, fehlgeschlagen = 0;
+        for (const zeile of zeilen ?? []) {
+          const aenderung: Record<string, string | null> = {};
+          let brauchtUpdate = false;
+          for (const sp of spalten) {
+            const alt = (zeile as Record<string, unknown>)[sp];
+            if (alt == null || alt === "") continue;
+            if (typeof alt !== "string") continue;
+            if (istVerschluesselt(alt)) continue; // schon erledigt
+            aenderung[sp] = await verschluesseln(alt);
+            brauchtUpdate = true;
+          }
+          if (!brauchtUpdate) { uebersprungen++; continue; }
+          if (trockenlauf) { verarbeitet++; continue; }
+
+          // Alle Spalten dieser Zeile in EINEM Update -- kein Teilzustand.
+          let q = admin.from(tabelle).update(aenderung);
+          for (const k of schluessel) q = q.eq(k, (zeile as Record<string, unknown>)[k]);
+          for (const sp of Object.keys(aenderung)) {
+            q = q.eq(sp, (zeile as Record<string, unknown>)[sp] as string);
+          }
+          const { data: getroffen, error: updErr } = await q.select(schluessel[0]);
+          if (updErr) { fehlgeschlagen++; console.error(`[ai ${VERSION}] enc_migrate ${tabelle}: ${updErr.message}`); continue; }
+          if (!getroffen || getroffen.length === 0) { nachtragNoetig++; continue; }
+          verarbeitet++;
+        }
+        bericht[tabelle] = { gesamt: (zeilen ?? []).length, verarbeitet, uebersprungen, nachtrag_noetig: nachtragNoetig, fehlgeschlagen };
+      }
+      return json({ ok: true, trockenlauf, bericht });
+    }
+
+    // ─── Nachverifikation: wie viel ist noch Klartext? ─────────
+    // Das einzige Werkzeug, das eine durch Nebenlaeufigkeit verpasste
+    // Zeile ueberhaupt sichtbar macht. Liefert nur Zahlen, nie Inhalte.
+    if (body.action === "enc_status") {
+      const { data: adminRow } = await admin.from("admins")
+        .select("user_id").eq("user_id", user.id).maybeSingle();
+      if (!adminRow) return json({ error: "Kein Zugriff." }, 403);
+
+      const ZIELE: Array<[string, string[]]> = [
+        ["ai_profiles", ["profile"]], ["chronicle", ["observation"]],
+        ["reports", ["notizen"]], ["mirrors", ["notizen"]],
+      ];
+      const bericht: Record<string, unknown> = {};
+      for (const [tabelle, spalten] of ZIELE) {
+        const { data: zeilen } = await admin.from(tabelle).select(spalten.join(", "));
+        const zahl: Record<string, { verschluesselt: number; klartext: number; leer: number }> = {};
+        for (const sp of spalten) zahl[sp] = { verschluesselt: 0, klartext: 0, leer: 0 };
+        for (const z of zeilen ?? []) {
+          for (const sp of spalten) {
+            const w = (z as Record<string, unknown>)[sp];
+            if (w == null || w === "") zahl[sp].leer++;
+            else if (typeof w === "string" && istVerschluesselt(w)) zahl[sp].verschluesselt++;
+            else zahl[sp].klartext++;
+          }
+        }
+        bericht[tabelle] = zahl;
+      }
+      return json({ ok: true, bericht });
+    }
+
     const { data: member } = await admin
       .from("couple_members").select("couple_id, role, display_name")
       .eq("user_id", user.id).maybeSingle();
@@ -366,18 +623,63 @@ Deno.serve(async (req) => {
       .from("couple_members").select("user_id, display_name")
       .eq("couple_id", member.couple_id).neq("user_id", user.id).maybeSingle();
 
-    const myProfile = await getProfile(admin, member.couple_id, user.id);
-    const partnerProfile = partner ? await getProfile(admin, member.couple_id, partner.user_id) : "";
-    const myChronik = await getChronik(admin, user.id);
-    const partnerChronik = partner ? await getChronik(admin, partner.user_id) : "";
+    // Profile und Chroniken werden NICHT mehr unbedingt vor jedem Dispatch
+    // geladen, sondern nur von den Aktionen, die sie wirklich brauchen.
+    // Zwei Gruende:
+    // 1. Sicherheit: Seit die Inhalte verschluesselt sind, koennte eine
+    //    einzige unlesbare Profil- oder Chronikzeile sonst JEDE Aktion
+    //    dieser Person sprengen -- auch delete_account (DSGVO Art. 17) und
+    //    die Geraetesperre. Es gaebe keinen Weg mehr heraus.
+    // 2. Kosten: Aktionen wie das Chat-Polling brauchen davon nichts,
+    //    zahlten aber bisher zwei Profile plus bis zu 240 Chronikzeilen
+    //    pro Aufruf mit.
+    // Das Ergebnis wird gemerkt, mehrfacher Aufruf innerhalb einer Anfrage
+    // kostet also nichts.
+    let _kontext: {
+      myProfile: string; partnerProfile: string;
+      myChronik: string; partnerChronik: string;
+    } | null = null;
+    async function kontext() {
+      if (_kontext) return _kontext;
+      _kontext = {
+        myProfile: await getProfile(admin, member.couple_id, user.id),
+        partnerProfile: partner ? await getProfile(admin, member.couple_id, partner.user_id) : "",
+        myChronik: await getChronik(admin, user.id),
+        partnerChronik: partner ? await getChronik(admin, partner.user_id) : "",
+      };
+      return _kontext;
+    }
 
-
+    // ─── "Ueber dich": Fragebogen, Profil und Chronik laden ──
+    // Musste aus Welle 2 vorgezogen werden: ai_profiles.profile und
+    // chronicle.observation galten faelschlich als "rein serverseitig",
+    // AboutYou.jsx liest sie aber direkt per RLS. Nach dem Verschluesseln
+    // stand dort ungefragt Ciphertext auf dem Bildschirm.
+    //
+    // Ersetzt drei RLS-Policies, deshalb hier explizit auf die eigene
+    // Person gefiltert -- der Service-Role-Client umgeht RLS.
+    if (body.action === "about_you_get") {
+      const { data: row } = await admin.from("assessments").select("*")
+        .eq("user_id", user.id).maybeSingle();
+      const profile = await getProfile(admin, member.couple_id, user.id);
+      const { data: chRoh } = await admin.from("chronicle")
+        .select("id, observation, created_at")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false }).limit(200);
+      const chronicle = await Promise.all((chRoh ?? []).map(async (c) => ({
+        id: c.id,
+        created_at: c.created_at,
+        observation: await entschluesselnTolerant(c.observation, `chronicle.observation id=${c.id}`),
+      })));
+      return json({ ok: true, row: row ?? null, profile, chronicle });
+    }
 
     // ─── Tagebuch: Impression + Profil-Update ───────────────
     if (body.action === "diary") {
       const { data: entry } = await admin.from("diary_entries")
         .select("id, content").eq("id", body.entry_id).eq("user_id", user.id).single();
       if (!entry) return json({ error: "Eintrag nicht gefunden." }, 404);
+      const { myProfile, partnerProfile, myChronik, partnerChronik } = await kontext();
 
       const feedback = await claude(`${GRUNDREGELN}
 
@@ -418,6 +720,7 @@ Antworte nur mit der Impression.`, 2500);
         .eq("id", body.entry_id).eq("user_id", user.id).single();
       if (!entry) return json({ error: "Eintrag nicht gefunden." }, 404);
       if (entry.thread_closed) return json({ error: "Dieser Faden ist abgeschlossen — ein neuer Eintrag öffnet einen neuen." }, 400);
+      const { myProfile, partnerProfile, myChronik, partnerChronik } = await kontext();
 
       const text = String(body.content ?? "").slice(0, 4000).trim();
       if (!text) return json({ error: "Leere Antwort." }, 400);
@@ -490,6 +793,7 @@ Antworte nur mit deiner Nachricht.`, 2500);
         .select("title, content").eq("couple_id", member.couple_id)
         .eq("user_id", user.id).neq("id", k.id)
         .order("created_at", { ascending: false }).limit(80);
+      const { myProfile, partnerProfile, myChronik, partnerChronik } = await kontext();
 
       const reflection = await claude(`${GRUNDREGELN}
 
@@ -527,6 +831,7 @@ Antworte nur mit den drei Teilen.`, 2500);
 
       const answersText = Object.values(a.answers as Record<string, { frage: string; antwort: string }>)
         .map((x) => `- ${x.frage}\n  Antwort: ${x.antwort}`).join("\n");
+      const { myProfile } = await kontext();
 
       await updateProfile(admin, member.couple_id, user.id, myProfile,
         `Basisfragebogen (Selbstauskunft zu Konfliktverhalten, Beduerfnissen, Werten und Praegung):\n${answersText}`);
@@ -557,6 +862,7 @@ Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","...","..."]}`);
       const idx = Number(body.index);
       if (!followups[idx]) return json({ error: "Frage nicht gefunden." }, 404);
       followups[idx].a = String(body.answer ?? "").slice(0, 2000);
+      const { myProfile } = await kontext();
 
       await updateProfile(admin, member.couple_id, user.id, myProfile,
         `Interview-Nachfrage: "${followups[idx].q}" — Antwort der Person: "${followups[idx].a}"`);
@@ -587,6 +893,7 @@ Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","...","..."]}`);
       const mine = await substanz(user.id);
       const theirs = await substanz(partner.user_id);
       const heuristik = mine.entries >= 1 && theirs.entries >= 1 && mine.chars >= 1200 && theirs.chars >= 1200;
+      const { myProfile, partnerProfile } = await kontext();
 
       const verdict = await claude(`${GRUNDREGELN}
 
@@ -781,7 +1088,8 @@ Antworte nur mit dem Bericht (drei Teile mit Ueberschriften).`;
 
         const neueId = await starteHintergrundantwort(berichtPrompt, 5000, true);
         await admin.from("reports").update({
-          stage: "bericht", openai_response_id: neueId, notizen,
+          stage: "bericht", openai_response_id: neueId,
+          notizen: await verschluesseln(notizen),
         }).eq("id", zeile.id);
         return json({ ok: true, status: "running" });
       }
@@ -880,7 +1188,8 @@ Antworte nur mit dem Spiegel-Text.`;
 
         const neueId = await starteHintergrundantwort(spiegelPrompt, 4000, true);
         await admin.from("mirrors").update({
-          stage: "spiegel", openai_response_id: neueId, notizen,
+          stage: "spiegel", openai_response_id: neueId,
+          notizen: await verschluesseln(notizen),
         }).eq("id", zeile.id);
         return json({ ok: true, status: "running" });
       }
@@ -1016,6 +1325,7 @@ Antworte nur mit ${modus === "thema" ? "der Ueberschrift" : "der Eroeffnung"}, o
       const { data: past } = await admin.from("probes").select("q")
         .eq("couple_id", member.couple_id).eq("user_id", user.id)
         .order("created_at", { ascending: false }).limit(10);
+      const { myProfile, partnerProfile, myChronik, partnerChronik } = await kontext();
 
       const raw = await claude(`${GRUNDREGELN}
 
@@ -1059,6 +1369,7 @@ Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","..."]}`, 900);
       }
       const answer = String(body.answer ?? "").slice(0, 4000);
       await admin.from("probes").update({ a: answer }).eq("id", pr.id);
+      const { myProfile } = await kontext();
       await updateProfile(admin, member.couple_id, user.id, myProfile,
         `Gezielte Frage: "${pr.q}" — Antwort der Person: "${answer}"`);
       return json({ ok: true });
@@ -1254,6 +1565,7 @@ Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","..."]}`, 900);
         m.sender_id === null ? `Zwischenraum: ${m.content}` :
         m.sender_id === user.id ? `${member.display_name ?? "Person 1"}: ${m.content}` :
         `${partner?.display_name ?? "Person 2"}: ${m.content}`).join("\n");
+      const { myProfile, partnerProfile } = await kontext();
 
       const mod = await claude(`${GRUNDREGELN}
 
@@ -1310,9 +1622,14 @@ async function materialFuer(
 async function getChronik(
   admin: ReturnType<typeof createClient>, userId: string, limit = 120,
 ): Promise<string> {
-  const { data } = await admin.from("chronicle").select("observation, created_at")
+  const { data } = await admin.from("chronicle").select("id, observation, created_at")
     .eq("user_id", userId).order("created_at", { ascending: true }).limit(limit);
-  return (data ?? []).map((c) => `[${c.created_at.slice(0, 10)}] ${c.observation}`).join("\n") || "";
+  // Tolerant: eine einzelne unlesbare Beobachtung darf nicht die ganze
+  // Chronik (und damit jede Analyse dieser Person) unbrauchbar machen.
+  const zeilen = await Promise.all((data ?? []).map(async (c) =>
+    `[${c.created_at.slice(0, 10)}] ${await entschluesselnTolerant(c.observation, `chronicle.observation id=${c.id}`)}`
+  ));
+  return zeilen.join("\n") || "";
 }
 
 // Eigenes Material im VOLLTEXT - hier gibt es keine Vertraulichkeitsgrenze.
@@ -1336,7 +1653,10 @@ async function eigenesMaterial(
 async function getProfile(admin: ReturnType<typeof createClient>, coupleId: string, userId: string): Promise<string> {
   const { data } = await admin.from("ai_profiles").select("profile")
     .eq("couple_id", coupleId).eq("user_id", userId).maybeSingle();
-  return data?.profile ?? "";
+  // Tolerant: das Profil steckt in fast jedem Prompt. Waere es hart, wuerde
+  // ein einziger unlesbarer Datensatz die Person komplett aussperren --
+  // genau das soll die faule Praeambel oben ja verhindern.
+  return await entschluesselnTolerant(data?.profile, `ai_profiles.profile user=${userId}`);
 }
 
 // Profil laufend verdichten: die Abstraktionsschicht, die Rohtext von der anderen Seite fernhaelt.
@@ -1360,7 +1680,9 @@ Neue Information:
 Antworte nur mit dem aktualisierten Profil.`, 4000);
 
   await admin.from("ai_profiles").upsert({
-    couple_id: coupleId, user_id: userId, profile: updated, updated_at: new Date().toISOString(),
+    couple_id: coupleId, user_id: userId,
+    profile: await verschluesseln(updated),
+    updated_at: new Date().toISOString(),
   });
 
   // Chronik ergaenzen: dauerhafte Beobachtungen, die NIE ueberschrieben werden.
@@ -1379,9 +1701,10 @@ Antworte NUR mit validem JSON ohne Backticks: {"beobachtungen":["...","..."]}`, 
     const arr = JSON.parse(raw.replace(/```json|```/g, "").trim()).beobachtungen ?? [];
     if (Array.isArray(arr) && arr.length) {
       await admin.from("chronicle").insert(
-        arr.slice(0, 3).map((o: string) => ({
-          couple_id: coupleId, user_id: userId, observation: String(o).slice(0, 1000),
-        })),
+        await Promise.all(arr.slice(0, 3).map(async (o: string) => ({
+          couple_id: coupleId, user_id: userId,
+          observation: await verschluesseln(String(o).slice(0, 1000)),
+        }))),
       );
     }
   } catch (e) {

@@ -40,17 +40,22 @@ export default function AboutYou({ membership }) {
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
 
+  // Laeuft ueber die Edge Function statt direkt per RLS, weil Profil und
+  // Chronik in der Datenbank verschluesselt liegen (CLAUDE.md Backlog 7) --
+  // der Schluessel existiert nur dort. Ein Direktzugriff wuerde Ciphertext
+  // anzeigen. Fragebogen-Daten kommen bewusst mit, damit es ein Aufruf
+  // bleibt statt drei.
   async function load() {
-    const { data } = await supabase.from("assessments").select("*")
-      .eq("user_id", membership.user_id).maybeSingle();
-    setRow(data || null);
-    const { data: p } = await supabase.from("ai_profiles").select("profile")
-      .eq("user_id", membership.user_id).maybeSingle();
-    setProfile(p?.profile || "");
-    const { data: ch } = await supabase.from("chronicle")
-      .select("id, observation, created_at")
-      .order("created_at", { ascending: false }).limit(200);
-    setChronik(ch || []);
+    try {
+      const res = await callAI({ action: "about_you_get" });
+      setRow(res.row || null);
+      setProfile(res.profile || "");
+      setChronik(res.chronicle || []);
+      setError(null);
+    } catch (e) {
+      setRow(null);
+      setError("Deine Daten konnten nicht geladen werden: " + (e?.message || e));
+    }
   }
   useEffect(() => { load(); }, []);
 
