@@ -184,6 +184,17 @@ Reihenfolge immer: SQL → Edge Function → Frontend.
    Schlüssel als Edge-Function-Secret. Klar kommunizierte Grenze: schützt nicht
    gegen den entschlossenen Betreiber; echte Nulleinsicht ginge nur
    clientseitig. Migration bestehender Daten nötig — vorher Backup.
+7. **Wiedereinstiegs-Schutz für „Dein Raum"** (Idee von Peter, 07.08.2026) —
+   PIN oder Biometrie, bevor der private Bereich nach einer Pause erneut
+   sichtbar wird. Motivation nicht Kryptografie, sondern die realistischste
+   Bedrohung bei einem Paar-Produkt: das entsperrte Handy liegt kurz auf dem
+   Tisch, die Partnerin oder der Partner nimmt es in die Hand. Dasselbe
+   Prinzip wie der App-Lock bei Signal oder Banking-Apps — die Anmeldesitzung
+   bleibt bestehen, aber niemand kommt ohne den zweiten Schritt an Inhalte.
+   **Wichtig:** muss echt wirken, nicht nur beruhigen — sonst widerspricht es
+   dem „technisch erzwungen, nicht nur zugesagt"-Versprechen, mit dem sich
+   Zwischenraum von anderen Apps absetzt. Ehrlich beschriften als „zusätzliche
+   Sperre auf diesem Gerät", nicht als Verschlüsselung.
 
 ## Bekannte Grenzen
 
