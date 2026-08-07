@@ -489,3 +489,41 @@ alter table device_locks enable row level security;
 -- Ablaufzeitpunkt reicht als Signal.
 alter table device_locks add column if not exists reset_token_hash text;
 alter table device_locks add column if not exists reset_expires timestamptz;
+
+-- ─────────────────────────────────────────────────────────────
+-- Delta 2026-08-07c: reports.notizen / mirrors.notizen vor
+-- Client-Zugriff schuetzen.
+--
+-- Befund: Die Policy "reports: Mitglieder lesen" gilt fuer die
+-- GANZE Zeile (is_member(couple_id)), und Supabase erteilt per
+-- Default ein tabellenweites Leserecht. Damit konnte die
+-- Partnerin/der Partner die internen Analysenotizen abrufen
+-- (supabase.from("reports").select("notizen")) -- also genau den
+-- Text, dessen Prompt ausdruecklich sagt "niemand ausser dir liest
+-- sie" und der KEINE Zitierverbots-Regeln hat, anders als der
+-- fertige Bericht. Ein direkter Bruch der Rohtext-Trennung.
+-- Dass Report.jsx die Spalte nicht abfragt, war reiner Zufall,
+-- kein Schutz.
+--
+-- WICHTIG: Ein spaltenweises "revoke select (notizen)" ist hier
+-- WIRKUNGSLOS -- Postgres wendet das nur an, wenn das Recht auch
+-- spaltenweise erteilt wurde. Bei einem tabellenweiten Grant muss
+-- man das Tabellenrecht entziehen und die erlaubten Spalten
+-- einzeln neu gewaehren. Die Listen unten sind bewusst
+-- vollstaendig (alles ausser notizen) -- beim Hinzufuegen einer
+-- neuen Spalte muss sie hier ergaenzt werden, sonst ist sie fuer
+-- Clients unsichtbar.
+--
+-- RLS bleibt davon unberuehrt und filtert die Zeilen wie bisher.
+-- Die Edge Function (Service Role) hat weiterhin vollen Zugriff.
+-- ─────────────────────────────────────────────────────────────
+
+revoke select on public.reports from authenticated, anon;
+grant select (id, couple_id, content, created_at, status, error_msg,
+              stage, openai_response_id, requested_by)
+  on public.reports to authenticated, anon;
+
+revoke select on public.mirrors from authenticated, anon;
+grant select (id, couple_id, user_id, content, created_at, status,
+              error_msg, stage, openai_response_id)
+  on public.mirrors to authenticated, anon;
