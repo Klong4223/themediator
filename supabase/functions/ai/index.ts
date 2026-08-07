@@ -264,7 +264,7 @@ async function tokenHash(token: string): Promise<string> {
 // in ihren Log-Ausgaben. Im Funktionsrumpf waere das zur Laufzeit zwar
 // unkritisch, aber Nutzung-vor-Deklaration hat hier schon einmal einen
 // Produktionsfehler verursacht (siehe CLAUDE.md) -- also gar nicht erst.
-const VERSION = "2026-08-07t";
+const VERSION = "2026-08-07u";
 
 // ─── Verschluesselung ruhender Inhalte (CLAUDE.md Backlog Punkt 7) ──
 // AES-256-GCM ueber Deno's natives crypto.subtle -- kein externes Paket,
@@ -2092,7 +2092,12 @@ Antworte NUR mit validem JSON ohne Backticks: {"beobachtungen":["...","..."]}`, 
       );
     }
   } catch (e) {
-    console.error("Chronik-Eintrag fehlgeschlagen:", e);
+    // BEWUSST nur die Fehlerart, nicht die Meldung: scheitert hier
+    // JSON.parse, enthaelt dessen Meldung einen Ausschnitt des
+    // geparsten Texts -- und das waeren Beobachtungen ueber die Person.
+    // Im Supabase-Log haette der Betreiber damit Inhalte im Klartext,
+    // genau das, was die Verschluesselung verhindern soll.
+    console.error(`Chronik-Eintrag fehlgeschlagen (${e instanceof Error ? e.name : "unbekannt"}).`);
   }
 }
 
