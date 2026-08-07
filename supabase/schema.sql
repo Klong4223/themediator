@@ -482,3 +482,10 @@ create table if not exists device_locks (
 
 alter table device_locks enable row level security;
 -- Bewusst keine Policies. RLS ist damit "deny all" fuer jeden Client.
+
+-- Rueckstetzung eines vergessenen PIN per Mail: Token-Hash + Ablauf,
+-- gepflegt ausschliesslich von der Edge Function (siehe lock_reset_request/
+-- lock_reset_confirm). Kein eigenes Feld fuer "angefordert am" noetig, der
+-- Ablaufzeitpunkt reicht als Signal.
+alter table device_locks add column if not exists reset_token_hash text;
+alter table device_locks add column if not exists reset_expires timestamptz;

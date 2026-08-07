@@ -110,7 +110,7 @@ Edge Function (Service Role) liest sie.
 `probe`, `probe_answer`, `gate`, `chat`, `report`, `report_poll`, `mirror`,
 `mirror_poll`, `doc_chat`, `doc_chat_share`, `meilensteine`, `notify`,
 `daily_digest`, `lock_status`, `lock_set`, `lock_remove`, `lock_verify`,
-`delete_account`, `admin_stats`
+`lock_reset_request`, `lock_reset_confirm`, `delete_account`, `admin_stats`
 
 Beziehungsbild und Spiegel laufen seit 07.08.2026 über OpenAIs Responses-API
 mit `background: true` (`starteHintergrundantwort`/`holeHintergrundantwort`):
@@ -221,6 +221,23 @@ Reihenfolge immer: SQL → Edge Function → Frontend.
    durchgespielt (Sperre setzen/falsch/richtig, PIN ändern mit falschem/
    richtigem altem PIN, Sperre entfernen, `delete_account` räumt
    `device_locks` mit auf) und rückstandsfrei aufgeräumt.
+
+   **Nachtrag (07.08.2026): PIN vergessen.** Zwei weitere Aktionen,
+   `lock_reset_request`/`lock_reset_confirm` — Peters Frage, ob es dafür
+   einen Weg gibt, war berechtigt: ohne sie saß man vor der eigenen Sperre
+   fest, weder `lock_set` noch `lock_remove` kommen ohne den PIN aus, den man
+   ja gerade vergessen hat. Bewusst per Mail statt z.B. per Konto-Passwort,
+   weil genau das den zweiten Faktor gegen die eigentliche Bedrohung bringt:
+   Wer nur das entsperrte, angemeldete Handy in der Hand hat, kommt ohne
+   Zugriff auf das Mail-Postfach nicht daran vorbei. `device_locks` hat dafür
+   zwei weitere Spalten (`reset_token_hash`, `reset_expires`, 30 Minuten
+   gültig, Token einmalig). Der Mail-Link (`?pin_reset=<token>`) landet in
+   `App.jsx`, das ihn nach dem Login automatisch einlöst, die Sperre entfernt
+   und den Query-Parameter aus der URL entfernt, damit ein Reload ihn nicht
+   erneut einlöst. Getestet: Anfrage (Token-Hash+Ablauf landen korrekt in der
+   Tabelle), falscher Code, abgelaufener Link, erfolgreicher Rücksetzvorgang
+   über die echte UI, Replay desselben Links (schlägt danach fehl, weil die
+   Zeile schon gelöscht ist) — danach wieder rückstandsfrei aufgeräumt.
 7. **Verschlüsselung der Inhalte in der Datenbank** — als Letztes. Ziel:
    Schutz gegen Datenbank-Leaks und versehentliches Mitlesen im Table Editor.
    Schlüssel als Edge-Function-Secret. Klar kommunizierte Grenze: schützt nicht

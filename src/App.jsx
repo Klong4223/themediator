@@ -17,6 +17,19 @@ function codeAusUrl() {
   catch { return ""; }
 }
 
+function pinResetTokenAusUrl() {
+  try { return new URLSearchParams(window.location.search).get("pin_reset") || ""; }
+  catch { return ""; }
+}
+
+/* Reine JSON-Fehlertexte aus der Edge Function ("... — {"error":"..."}")
+   auf die eigentliche Ursache eindampfen, statt sie roh anzuzeigen. */
+function fehlerText(e) {
+  const raw = e?.message || String(e);
+  const m = raw.match(/"error"\s*:\s*"([^"]+)"/);
+  return m ? m[1] : raw;
+}
+
 export default function App() {
   const [session, setSession] = useState(undefined);
   const [membership, setMembership] = useState(undefined);
@@ -277,6 +290,22 @@ function Main({ session, membership }) {
     return () => document.removeEventListener("visibilitychange", onVisibility);
   }, []);
 
+  // Link aus der "PIN vergessen"-Mail: ?pin_reset=<token> loest die
+  // Sperre serverseitig auf, sobald die Sitzung angemeldet ist (Main
+  // wird ja nur nach erfolgreichem Login gerendert).
+  const [pinResetToken] = useState(pinResetTokenAusUrl);
+  const [pinResetStatus, setPinResetStatus] = useState(null); // null | "ok" | error string
+
+  useEffect(() => {
+    if (!pinResetToken) return;
+    const url = new URL(window.location.href);
+    url.searchParams.delete("pin_reset");
+    window.history.replaceState({}, "", url.toString());
+    callAI({ action: "lock_reset_confirm", token: pinResetToken })
+      .then(() => { setPinResetStatus("ok"); setEntsperrt(true); pruefePinStatus(); })
+      .catch((e) => setPinResetStatus(fehlerText(e)));
+  }, [pinResetToken]);
+
   const deinBereit = pinGesetzt !== null;
   const deinGesperrt = pinGesetzt === true && !entsperrt;
 
@@ -295,6 +324,14 @@ function Main({ session, membership }) {
 
   return (
     <Shell>
+      {pinResetStatus === "ok" && (
+        <p style={{ ...st.hint, color: C.ok, background: C.paper, borderRadius: 10, padding: "10px 14px", marginBottom: 14 }}>
+          ✓ Deine Sperre für „Dein Raum" wurde entfernt. Du kannst in den Einstellungen einen neuen PIN einrichten.
+        </p>
+      )}
+      {pinResetStatus && pinResetStatus !== "ok" && (
+        <ErrorNote>Rücksetzung fehlgeschlagen: {pinResetStatus}</ErrorNote>
+      )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 18 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <h1 style={{ ...st.h1, fontSize: 26 }}>Zwischenraum</h1>

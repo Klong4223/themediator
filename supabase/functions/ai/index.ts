@@ -246,7 +246,21 @@ function gueltigerPin(pin: unknown): pin is string {
   return typeof pin === "string" && /^\d{4,8}$/.test(pin);
 }
 
-const VERSION = "2026-08-07d";
+// PIN-Rueckstetzung per Mail: Token ist per se schon hochentropisch
+// (32 Byte Zufall), deshalb ungesalzener Hash zur Ablage -- anders als beim
+// PIN selbst (der ist kurz und brauchbar fuers Erraten, deshalb Salt+Hash).
+function neuesToken(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+async function tokenHash(token: string): Promise<string> {
+  const enc = new TextEncoder().encode(token);
+  const digest = await crypto.subtle.digest("SHA-256", enc);
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+const VERSION = "2026-08-07e";
 
 // Schwelle fuer "bild_duenn" (KONZEPT.md 7.2): je Person mindestens so viele
 // Chronik-Eintraege, sonst zeigt das Frontend vor dem Erstellen eine
@@ -1141,6 +1155,56 @@ Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","..."]}`, 900);
       return json({ ok: pruef === bestehend.pin_hash });
     }
 
+    // ─── Wiedereinstiegs-Schutz: Rueckstetzung per Mail anfordern ──
+    // Zweiter Faktor gegen genau die Bedrohung, vor der die Sperre selbst
+    // schuetzt: Wer nur das entsperrte, angemeldete Geraet in der Hand hat,
+    // kommt ohne Zugriff auf das Mail-Postfach nicht an einer vergessenen
+    // Sperre vorbei.
+    if (body.action === "lock_reset_request") {
+      const { data: bestehend } = await admin.from("device_locks")
+        .select("user_id").eq("user_id", user.id).maybeSingle();
+      if (!bestehend) return json({ ok: true }); // keine Sperre gesetzt -- nichts zu tun
+      const token = neuesToken();
+      const hash = await tokenHash(token);
+      const ablauf = new Date(Date.now() + 30 * 60_000).toISOString();
+      await admin.from("device_locks").update({
+        reset_token_hash: hash, reset_expires: ablauf,
+      }).eq("user_id", user.id);
+      if (user.email) {
+        await sendMail(
+          user.email,
+          "Sperre zurücksetzen",
+          "Du hast angefragt, deine Sperre für \"Dein Raum\" bei Zwischenraum zurückzusetzen. " +
+          "Der folgende Link ist 30 Minuten gültig und entfernt deinen bisherigen PIN -- " +
+          "danach kannst du in den Einstellungen einen neuen einrichten. " +
+          "Wenn du das nicht warst, ignoriere diese Nachricht: Ohne Klick ändert sich nichts.",
+          `${APP_URL}/?pin_reset=${token}`,
+        );
+      }
+      return json({ ok: true });
+    }
+
+    // ─── Wiedereinstiegs-Schutz: Rueckstetzung bestaetigen ──────
+    if (body.action === "lock_reset_confirm") {
+      if (typeof body.token !== "string" || !body.token) {
+        return json({ error: "Kein Rücksetz-Code angegeben." }, 400);
+      }
+      const { data: bestehend } = await admin.from("device_locks")
+        .select("reset_token_hash, reset_expires").eq("user_id", user.id).maybeSingle();
+      if (!bestehend?.reset_token_hash || !bestehend.reset_expires) {
+        return json({ error: "Kein Rücksetzvorgang offen. Bitte fordere einen neuen Link an." }, 400);
+      }
+      if (new Date(bestehend.reset_expires).getTime() < Date.now()) {
+        return json({ error: "Der Link ist abgelaufen. Bitte fordere einen neuen an." }, 400);
+      }
+      const pruef = await tokenHash(body.token);
+      if (pruef !== bestehend.reset_token_hash) {
+        return json({ error: "Der Rücksetz-Code stimmt nicht." }, 403);
+      }
+      await admin.from("device_locks").delete().eq("user_id", user.id);
+      return json({ ok: true });
+    }
+
     // ─── Konto loeschen (DSGVO Art. 17) ─────────────────────
     if (body.action === "delete_account") {
       const cid = member.couple_id;
@@ -1383,10 +1447,10 @@ async function benachrichtigeBeiFreigabe(
   return send;
 }
 
-async function sendMail(to: string, subject: string, body: string) {
+async function sendMail(to: string, subject: string, body: string, link: string = APP_URL) {
   const key = Deno.env.get("RESEND_API_KEY");
   if (!key) { console.error("RESEND_API_KEY fehlt - keine Mail versendet."); return; }
-  const text = `${body}\n\nHier geht es weiter: ${APP_URL}\n\n--\nDu bekommst diese Nachricht, weil du Zwischenraum nutzt.\nHäufigkeit ändern oder abbestellen: ${APP_URL} (Bereich "Über dich" > Benachrichtigungen)\nAus Datenschutzgründen stehen in unseren E-Mails niemals Inhalte.`;
+  const text = `${body}\n\nHier geht es weiter: ${link}\n\n--\nDu bekommst diese Nachricht, weil du Zwischenraum nutzt.\nHäufigkeit ändern oder abbestellen: ${APP_URL} (Bereich "Über dich" > Benachrichtigungen)\nAus Datenschutzgründen stehen in unseren E-Mails niemals Inhalte.`;
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: { "content-type": "application/json", "authorization": `Bearer ${key}` },
