@@ -74,6 +74,7 @@ src/
     DocChat.jsx          Verankerter Gesprächsfaden zu Bericht/Spiegel (privat)
     SharedChat.jsx       Gate + moderierter gemeinsamer Chat (Euer Raum)
     Geraetesperre.jsx    Lock-Screen fuer den Wiedereinstiegs-Schutz (Dein Raum)
+    Wegweiser.jsx        Einklappbare Orientierung ueber allen Reitern von Dein Raum
     Settings.jsx         Benachrichtigungen, Konto, Löschung, PIN-Sperre (eigenes Icon, kein Raum)
 supabase/
   schema.sql                   Vollständiges Schema, idempotent
@@ -208,6 +209,22 @@ Material gesperrt, mit kurzem Eintrag gesperrt, mit *einem* Eintrag von
 2.700 Zeichen freigegeben; der erzeugte Bericht enthielt keine der
 konkreten Situationen aus den Eingaben (Umzug, Auto, Tisch, Beruf) und
 benannte den dünnen Materialstand mehrfach von selbst.
+
+**Erklärt wird das an zwei Stellen** (08.08.2026), weil eine Sperre ohne
+Begründung nur wie ein Defekt aussieht. Die Kette „du schreibst → Zwischen-
+raum versteht dich → daraus entsteht das gemeinsame Bild" stand vorher
+nirgends; erklärt war nur, *wer was sieht*, nie *wozu die Teile zusammen
+gut sind*:
+- `Landing.jsx`, Abschnitt „Wofür das alles gut ist" — vier aufeinander
+  aufbauende Schritte plus die Begründung, warum das Bild nicht sofort
+  kommt. Die Wartezeit als Konsequenz des Versprechens formuliert, nicht
+  als Einschränkung.
+- `Wegweiser.jsx` — dasselbe in der App, über allen Reitern von „Dein
+  Raum", mit einer Zeile je Reiter. Einklappbar; eingeklappt bleibt eine
+  schmale Zeile stehen, über die man jederzeit zurückkommt (kein
+  Einmal-Onboarding, das nach dem Wegklicken für immer weg ist). Zustand
+  in `localStorage`, an die Nutzer-ID gebunden — reine
+  Oberflächen-Vorliebe, gehört nicht in die Datenbank.
 
 `doc_chat_verdichten` arbeitet die verankerten Gespräche ins Profil und die
 Chronik ein — sie waren bis 07.08.2026 die einzige Textquelle, die **nicht**

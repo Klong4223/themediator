@@ -29,6 +29,32 @@ function Beispiel({ children }) {
   );
 }
 
+// Ein Schritt auf dem Weg. Die Nummerierung ist hier keine Deko: die
+// Schritte bauen tatsaechlich aufeinander auf -- genau das war die Luecke,
+// die Nutzerinnen gemeldet haben ("wofuer ist das alles?").
+function Schritt({ n, farbe, titel, letzter, children }) {
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "34px 1fr", gap: "0 14px" }}>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+        <span style={{
+          width: 34, height: 34, borderRadius: 999, flexShrink: 0, background: farbe, color: "#fff",
+          fontFamily: font.display, fontSize: 16, fontWeight: 600,
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }}>
+          {n}
+        </span>
+        {!letzter && <span aria-hidden="true" style={{ flex: 1, width: 2, background: C.line, marginTop: 6 }} />}
+      </div>
+      <div style={{ paddingBottom: letzter ? 0 : 24 }}>
+        <h3 style={{ fontFamily: font.display, fontSize: 18, fontWeight: 600, color: C.ink, margin: "5px 0 0" }}>
+          {titel}
+        </h3>
+        <p style={{ ...st.body, fontSize: 15 }}>{children}</p>
+      </div>
+    </div>
+  );
+}
+
 export default function Landing({ onStart }) {
   const h = { fontFamily: font.display, color: C.ink, letterSpacing: "-0.01em" };
   return (
@@ -110,6 +136,48 @@ export default function Landing({ onStart }) {
               <p style={{ ...st.body, fontSize: 14, margin: 0 }}>{d}</p>
             </div>
           ))}
+        </div>
+      </S>
+
+      {/* ─── Wofür das alles gut ist ─── */}
+      <S style={{ marginTop: 56 }}>
+        <h2 style={{ ...h, fontSize: 26, textAlign: "center", margin: "0 0 8px" }}>Wofür das alles gut ist</h2>
+        <p style={{ ...st.body, textAlign: "center", color: C.inkSoft, maxWidth: 560, margin: "0 auto 26px" }}>
+          Zwischenraum ist keine Sammlung von Funktionen, sondern ein Weg. Jeder Schritt macht
+          den nächsten erst möglich.
+        </p>
+        <div style={{ ...st.card, padding: "26px 28px" }}>
+          <Schritt n="1" farbe={C.a} titel="Du schreibst — für dich allein.">
+            Was dich heute beschäftigt. Der Streit, der immer wiederkommt. Ein paar Fragen über
+            dich. Ohne Rücksicht darauf, wie es ankommt — hier kommt es bei niemandem an außer
+            bei dir.
+          </Schritt>
+          <Schritt n="2" farbe={C.a} titel="Zwischenraum hört zu und fragt nach.">
+            Auf jeden Eintrag kommt eine Antwort, oft eine Rückfrage, die weiterführt. Mit der
+            Zeit entsteht daraus ein Verständnis von dir: was dich trägt, was dich verletzt, was
+            sich wiederholt. Du kannst es jederzeit nachlesen — es heißt „Dein Spiegel" und
+            gehört nur dir.
+          </Schritt>
+          <Schritt n="3" farbe={C.b} titel="Auf der anderen Seite passiert dasselbe. Getrennt.">
+            Deine Partnerin oder dein Partner schreibt im eigenen Raum, mit eigenem Konto und
+            eigenem Passwort. Keiner von euch sieht die Texte des anderen — auch nicht, ob
+            überhaupt gerade etwas geschrieben wurde.
+          </Schritt>
+          <Schritt n="4" farbe={C.ink} titel="Daraus entsteht das Beziehungsbild." letzter>
+            Zwischenraum ist die einzige Stelle, an der beide Seiten zusammenkommen. Was ihr dann
+            lest, ist neu geschrieben: eure Gefühle, Bedürfnisse und Muster — nie eure Sätze. Und
+            wenn ihr beide bereit seid, öffnet sich zusätzlich der gemeinsame Raum.
+          </Schritt>
+        </div>
+
+        <div style={{ ...st.card, borderLeft: `3px solid ${C.ink}`, marginTop: 16 }}>
+          <h3 style={{ ...h, fontSize: 18, margin: 0 }}>Deshalb gibt es das Beziehungsbild nicht sofort.</h3>
+          <p style={{ ...st.body, fontSize: 15 }}>
+            Es wird aus dem gemacht, was ihr schreibt. Wäre erst wenig da, würde jede
+            „Zusammenfassung" in Wahrheit zur Nacherzählung — und dein Gegenüber läse praktisch
+            deinen Originaltext. Genau das soll nie passieren. Also wartet Zwischenraum, bis von
+            beiden Seiten genug da ist, und zeigt dir vorher an, wie weit du schon bist.
+          </p>
         </div>
       </S>
 

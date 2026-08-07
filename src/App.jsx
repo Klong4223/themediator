@@ -12,6 +12,7 @@ import Landing from "./Landing.jsx";
 import Invite from "./Invite.jsx";
 import Settings from "./sections/Settings.jsx";
 import Geraetesperre from "./sections/Geraetesperre.jsx";
+import Wegweiser from "./sections/Wegweiser.jsx";
 import AdminDashboard from "./AdminDashboard.jsx";
 
 function codeAusUrl() {
@@ -397,6 +398,10 @@ function Main({ session, membership }) {
         </div>
       )}
       {(raum !== "dein" || !deinBereit || deinGesperrt) && <div style={{ marginBottom: 22 }} />}
+
+      {raum === "dein" && deinBereit && !deinGesperrt && (
+        <Wegweiser userId={session.user.id} />
+      )}
 
       {raum === "dein" && !deinBereit && <p style={st.hint}>Lade …</p>}
       {raum === "dein" && deinBereit && deinGesperrt && (
