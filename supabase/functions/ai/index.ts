@@ -264,7 +264,7 @@ async function tokenHash(token: string): Promise<string> {
 // in ihren Log-Ausgaben. Im Funktionsrumpf waere das zur Laufzeit zwar
 // unkritisch, aber Nutzung-vor-Deklaration hat hier schon einmal einen
 // Produktionsfehler verursacht (siehe CLAUDE.md) -- also gar nicht erst.
-const VERSION = "2026-08-07r";
+const VERSION = "2026-08-07t";
 
 // ─── Verschluesselung ruhender Inhalte (CLAUDE.md Backlog Punkt 7) ──
 // AES-256-GCM ueber Deno's natives crypto.subtle -- kein externes Paket,
@@ -482,6 +482,61 @@ Deno.serve(async (req) => {
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     );
+    const body = await req.json();
+
+    // ─── Tageszusammenfassung (vom Cron-Job aufgerufen) ────────
+    // Steht VOR der Anmeldepruefung: ein Cron-Auftrag hat keine
+    // Nutzersitzung. Das Secret ist hier die Berechtigung -- deshalb
+    // muss es gesetzt sein UND uebereinstimmen. Fehlt es, waere
+    // env.get undefined und ein Aufruf ohne "secret" ergaebe
+    // undefined !== undefined, also false: die Sperre wuerde NICHT
+    // greifen und jeder koennte Mails an alle ausloesen.
+    if (body.action === "daily_digest") {
+      // Das Secret liegt NUR in Postgres (Vault) -- dort erzeugt, vom
+      // Cron-Job zur Laufzeit gelesen, hier per SECURITY-DEFINER-Funktion
+      // geprueft. So steht es weder in einer Umgebungsvariable noch in
+      // der Job-Definition noch in irgendeinem Protokoll.
+      //
+      // Gibt es kein Secret im Vault, liefert die Pruefung false und die
+      // Aktion ist komplett gesperrt -- ein sicherer Ausgangszustand.
+      const geheim = typeof body.secret === "string" ? body.secret : "";
+      const { data: erlaubt, error: pruefFehler } = await admin
+        .rpc("cron_secret_pruefen", { p: geheim });
+      if (pruefFehler || erlaubt !== true) {
+        return json({ error: "Kein Zugriff." }, 403);
+      }
+      console.log(`[ai ${VERSION}] action=daily_digest (Cron)`);
+      const { data: pending } = await admin.from("email_events")
+        .select("id, recipient_id, kind").eq("included_in_daily", false)
+        .order("created_at", { ascending: true }).limit(500);
+      const byUser: Record<string, { ids: string[]; kinds: Set<string> }> = {};
+      for (const e of pending ?? []) {
+        (byUser[e.recipient_id] ??= { ids: [], kinds: new Set() });
+        byUser[e.recipient_id].ids.push(e.id);
+        byUser[e.recipient_id].kinds.add(e.kind);
+      }
+      let sent = 0;
+      for (const [uid, agg] of Object.entries(byUser)) {
+        const { data: m } = await admin.from("couple_members")
+          .select("email_freq").eq("user_id", uid).maybeSingle();
+        if ((m?.email_freq ?? "daily") !== "none") {
+          const { data: u } = await admin.auth.admin.getUserById(uid);
+          const to = u?.user?.email;
+          if (to) {
+            await sendMail(to, "Es gibt Neues bei Zwischenraum", {
+              intro: "In eurem Zwischenraum hat sich etwas getan:",
+              punkte: [...agg.kinds].map((k) => textFor(k)),
+              linkText: "Zu Zwischenraum",
+            });
+            sent++;
+          }
+        }
+        await admin.from("email_events").update({ included_in_daily: true }).in("id", agg.ids);
+      }
+      console.log(`[ai ${VERSION}] daily_digest: ${sent} Mail(s) an ${Object.keys(byUser).length} Empfaenger`);
+      return json({ ok: true, recipients: sent, verarbeitet: (pending ?? []).length });
+    }
+
     // Nutzer aus dem JWT ermitteln
     const authHeader = req.headers.get("Authorization") ?? "";
     const userClient = createClient(
@@ -492,7 +547,6 @@ Deno.serve(async (req) => {
     const { data: { user } } = await userClient.auth.getUser();
     if (!user) return json({ error: "Nicht angemeldet." }, 401);
 
-    const body = await req.json();
     console.log(`[ai ${VERSION}] action=${body?.action} user=${user.id}`);
 
     // ─── Admin-Statistiken (separates Admin-Konto, nur Zahlen) ─
@@ -1676,46 +1730,6 @@ Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","..."]}`, 900);
       }
       const send = await benachrichtigeBeiFreigabe(admin, member.couple_id, partner.user_id, kind);
       return json({ ok: true, sent: send });
-    }
-
-    // ─── Tageszusammenfassung (per Cron aufgerufen) ─────────
-    if (body.action === "daily_digest") {
-      // Das fehlende !Deno.env.get(...) davor war eine echte Luecke: ist
-      // CRON_SECRET nicht gesetzt, liefert env.get undefined -- und ein
-      // Aufruf ohne "secret" ergibt undefined !== undefined, also false.
-      // Die Sperre griff dann NICHT, und jede angemeldete Person konnte
-      // die Tageszusammenfassung an alle ausloesen.
-      if (!Deno.env.get("CRON_SECRET") || body.secret !== Deno.env.get("CRON_SECRET")) {
-        return json({ error: "Kein Zugriff." }, 403);
-      }
-      const { data: pending } = await admin.from("email_events")
-        .select("id, recipient_id, kind").eq("included_in_daily", false)
-        .order("created_at", { ascending: true }).limit(500);
-      const byUser: Record<string, { ids: string[]; kinds: Set<string> }> = {};
-      for (const e of pending ?? []) {
-        (byUser[e.recipient_id] ??= { ids: [], kinds: new Set() });
-        byUser[e.recipient_id].ids.push(e.id);
-        byUser[e.recipient_id].kinds.add(e.kind);
-      }
-      let sent = 0;
-      for (const [uid, agg] of Object.entries(byUser)) {
-        const { data: m } = await admin.from("couple_members")
-          .select("email_freq").eq("user_id", uid).maybeSingle();
-        if ((m?.email_freq ?? "daily") !== "none") {
-          const { data: u } = await admin.auth.admin.getUserById(uid);
-          const to = u?.user?.email;
-          if (to) {
-            await sendMail(to, "Es gibt Neues bei Zwischenraum", {
-              intro: "In eurem Zwischenraum hat sich etwas getan:",
-              punkte: [...agg.kinds].map((k) => textFor(k)),
-              linkText: "Zu Zwischenraum",
-            });
-            sent++;
-          }
-        }
-        await admin.from("email_events").update({ included_in_daily: true }).in("id", agg.ids);
-      }
-      return json({ ok: true, recipients: sent });
     }
 
     // ─── Wiedereinstiegs-Schutz: Zustand abfragen ───────────

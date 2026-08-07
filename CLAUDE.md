@@ -343,7 +343,14 @@ Reihenfolge immer: SQL → Edge Function → Frontend.
 
 - Chat aktualisiert per Polling, nicht Realtime.
 - Apple-Login vorbereitet, aber nicht konfiguriert (Button entfernt).
-- Tageszusammenfassung braucht noch einen Cron-Job (auskommentiert in `schema.sql`).
+- ~~Tageszusammenfassung braucht noch einen Cron-Job~~ **→ erledigt
+  (07.08.2026).** `pg_cron` prüft stündlich und löst um 19 Uhr deutscher
+  Zeit aus (Stundenvergleich statt fester UTC-Zeit, sonst springt es
+  zwischen Sommer- und Winterzeit). Berechtigung ist ein Secret, das
+  Postgres selbst erzeugt und im Vault hält — es steht in keiner
+  Umgebungsvariable und in keinem Protokoll; die Edge Function prüft per
+  `cron_secret_pruefen` dagegen. `daily_digest` steht deshalb **vor** der
+  Anmeldeprüfung: ein Cron-Auftrag hat keine Nutzersitzung.
 - Vor kommerziellem Start: Anwaltsprüfung (Art.-9-Daten, AGB), Gewerbeanmeldung.
 
 ## Zusammenarbeit

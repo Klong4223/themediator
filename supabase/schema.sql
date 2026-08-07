@@ -639,3 +639,86 @@ alter table doc_chats add column if not exists verdichtet boolean not null defau
 
 create index if not exists doc_chats_offen_idx
   on doc_chats (user_id, verdichtet) where verdichtet = false;
+
+-- ─────────────────────────────────────────────────────────────
+-- Delta 2026-08-07h: Cron-Job fuer die Tageszusammenfassung.
+--
+-- Die Aktion daily_digest existierte laengst, aber niemand rief sie
+-- auf -- obwohl "Einmal am Tag" die Standardeinstellung ist. Es hat
+-- also nie jemand eine Zusammenfassung bekommen. Ein stiller
+-- Funktionsausfall, keine blosse Luecke.
+--
+-- Das Secret wird HIER von Postgres erzeugt und im Vault abgelegt.
+-- Es wird nie ausgelesen: der Cron-Job liest es zur Laufzeit direkt
+-- aus dem Vault, die Edge Function prueft ueber cron_secret_pruefen
+-- dagegen. Damit steht es weder in einer Umgebungsvariable noch in
+-- der Job-Definition noch in irgendeinem Protokoll.
+--
+-- daily_digest steht in der Edge Function bewusst VOR der
+-- Anmeldepruefung -- ein Cron-Auftrag hat keine Nutzersitzung. Das
+-- Secret IST dort die Berechtigung.
+-- ─────────────────────────────────────────────────────────────
+
+create extension if not exists pg_cron;
+create extension if not exists pg_net;
+
+do $$
+begin
+  if not exists (select 1 from vault.secrets where name = 'zwischenraum_cron_secret') then
+    perform vault.create_secret(
+      encode(gen_random_bytes(32), 'base64'),
+      'zwischenraum_cron_secret',
+      'Berechtigung fuer den taeglichen Zusammenfassungs-Job'
+    );
+  end if;
+end $$;
+
+-- SECURITY DEFINER, weil das Schema vault sonst nicht erreichbar
+-- waere. Ausfuehrbar NUR fuer die Service Role.
+create or replace function public.cron_secret_pruefen(p text)
+returns boolean language sql security definer stable
+set search_path = public, vault as $$
+  select exists (
+    select 1 from vault.decrypted_secrets
+    where name = 'zwischenraum_cron_secret'
+      and decrypted_secret = p
+      and p <> ''
+  );
+$$;
+
+revoke execute on function public.cron_secret_pruefen(text) from public;
+revoke execute on function public.cron_secret_pruefen(text) from anon;
+revoke execute on function public.cron_secret_pruefen(text) from authenticated;
+grant execute on function public.cron_secret_pruefen(text) to service_role;
+
+-- Stuendlich pruefen, aber nur um 19 Uhr deutscher Zeit ausloesen.
+-- Umweg ueber den Stundenvergleich statt fester UTC-Zeit, weil
+-- pg_cron in UTC plant und die Mail sonst zwischen Sommer- und
+-- Winterzeit um eine Stunde springen wuerde.
+--
+-- Der anon-Key im Header ist kein Geheimnis (er steht auch im
+-- Frontend) -- die Edge-Function-Plattform verlangt nur irgendein
+-- gueltiges JWT, die eigentliche Berechtigung ist das Vault-Secret.
+select cron.unschedule('zwischenraum-tageszusammenfassung')
+where exists (select 1 from cron.job where jobname = 'zwischenraum-tageszusammenfassung');
+
+select cron.schedule(
+  'zwischenraum-tageszusammenfassung',
+  '0 * * * *',
+  $job$
+  select net.http_post(
+    url := 'https://bhdybaonkdvpqlttyihx.supabase.co/functions/v1/ai',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJoZHliYW9ua2R2cHFsdHR5aWh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU2NjYyMTQsImV4cCI6MjEwMTI0MjIxNH0.rBEbR30u7oacT0y0lpwpcDljD_qu8q01HgoOzvm2kOQ'
+    ),
+    body := jsonb_build_object(
+      'action', 'daily_digest',
+      'secret', (select decrypted_secret from vault.decrypted_secrets
+                 where name = 'zwischenraum_cron_secret')
+    ),
+    timeout_milliseconds := 60000
+  )
+  where extract(hour from now() at time zone 'Europe/Berlin') = 19;
+  $job$
+);
