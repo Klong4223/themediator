@@ -173,10 +173,12 @@ Reihenfolge immer: SQL → Edge Function → Frontend.
    Für Beziehungsbild/Spiegel gibt es seit 06.08. immerhin eine Stale-Erkennung
    mit Wiederholen-Knopf (`Report.jsx`) — das ist ein Netz gegen ewiges Warten,
    keine Phasenanzeige.
-5. **Barometer:** je Partner anzeigen, wieviel Inhalt eingeflossen ist (alles
-   Geschriebene und Beantwortete) und wie aussagekräftig das Beziehungsbild
-   dadurch wird. Offene Fragen: Sieht jeder die Werte des anderen? Zählt
-   Umfang oder Themenabdeckung?
+5. ~~Barometer~~ **→ „Der nächste Schritt"** (verworfen und ersetzt am
+   07.08.2026, siehe `KONZEPT.md`): Kein Füllstand je Partner — ein
+   Fleiß-Maß über die andere Person würde bei einem Paar in der Krise zum
+   Vorwurf. Stattdessen eine Karte, die den nächsten noch nicht erreichten
+   Meilenstein benennt und im Klartext begründet, warum er es noch nicht
+   ist. Baut auf dem vorhandenen Muster von `couple_state.readiness` auf.
 6. **Verschlüsselung der Inhalte in der Datenbank** — als Letztes. Ziel:
    Schutz gegen Datenbank-Leaks und versehentliches Mitlesen im Table Editor.
    Schlüssel als Edge-Function-Secret. Klar kommunizierte Grenze: schützt nicht
