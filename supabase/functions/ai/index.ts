@@ -264,7 +264,7 @@ async function tokenHash(token: string): Promise<string> {
 // in ihren Log-Ausgaben. Im Funktionsrumpf waere das zur Laufzeit zwar
 // unkritisch, aber Nutzung-vor-Deklaration hat hier schon einmal einen
 // Produktionsfehler verursacht (siehe CLAUDE.md) -- also gar nicht erst.
-const VERSION = "2026-08-07n";
+const VERSION = "2026-08-07o";
 
 // ─── Verschluesselung ruhender Inhalte (CLAUDE.md Backlog Punkt 7) ──
 // AES-256-GCM ueber Deno's natives crypto.subtle -- kein externes Paket,
@@ -923,6 +923,21 @@ Antworte nur mit den drei Teilen.`, 2500);
           ai_reflection: await entschluesselnTolerant(c.ai_reflection, `conflicts.ai_reflection id=${c.id}`),
         }))),
       });
+    }
+
+    // ─── Fragebogen ueberspringen / doch machen ────────────────
+    // Setzt nur ein Flag, beruehrt keine Inhalte. Trotzdem hierher
+    // verlagert: damit auf assessments (wie auf allen Inhaltstabellen)
+    // gar keine Client-Schreibrechte mehr noetig sind und Klartext dort
+    // strukturell nicht mehr entstehen KANN.
+    if (body.action === "assessment_skip") {
+      const wert = body.skipped === true;
+      const { error } = await admin.from("assessments").upsert({
+        couple_id: member.couple_id, user_id: user.id,
+        skipped: wert, updated_at: new Date().toISOString(),
+      });
+      if (error) return json({ error: `Konnte nicht gespeichert werden: ${error.message}` }, 500);
+      return json({ ok: true, skipped: wert });
     }
 
     // ─── Fragebogen speichern, auswerten, Nachfragen erzeugen ─

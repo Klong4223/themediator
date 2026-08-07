@@ -579,3 +579,45 @@ create policy "chronicle: nur eigene lesen" on chronicle
 
 alter table assessments add column if not exists answers_enc text;
 alter table assessments add column if not exists followups_enc text;
+
+-- ─────────────────────────────────────────────────────────────
+-- Delta 2026-08-07f: Schreibrechte fuer Clients entziehen.
+--
+-- Seit alle Inhalte verschluesselt sind, schreibt sie ausschliesslich
+-- die Edge Function -- nur sie hat den Schluessel. Erlaubt war ein
+-- direkter Client-Schreibzugriff aber weiterhin (die Policies standen
+-- auf "for all"). Ein alter Browser-Tab nach einem Deploy, ein Bug
+-- oder ein kuenftiges Feature haette dort Klartext hinterlassen, und
+-- beim Lesen reicht entschluesseln() Klartext still durch -- es waere
+-- also nicht einmal aufgefallen.
+--
+-- Deshalb: nur noch Lesen. Damit ist "in der Datenbank steht kein
+-- Klartext" strukturell erzwungen statt nur beabsichtigt.
+--
+-- Lesen bleibt bewusst erlaubt: der Client bekaeme ohnehin nur
+-- Ciphertext, und die Policies sind das Netz, falls je wieder direkt
+-- gelesen wird.
+--
+-- NICHT betroffen: couple_members. Dort stehen Metadaten
+-- (report_consent, display_name, email_freq), die das Frontend
+-- weiterhin direkt setzt -- unverschluesselt und ohne Inhaltsbezug.
+-- ─────────────────────────────────────────────────────────────
+
+drop policy if exists "diary: nur eigene" on diary_entries;
+drop policy if exists "diary: nur eigene lesen" on diary_entries;
+create policy "diary: nur eigene lesen" on diary_entries
+  for select using (user_id = auth.uid());
+
+drop policy if exists "conflicts: nur eigene" on conflicts;
+drop policy if exists "conflicts: nur eigene lesen" on conflicts;
+create policy "conflicts: nur eigene lesen" on conflicts
+  for select using (user_id = auth.uid());
+
+drop policy if exists "assessments: nur eigene" on assessments;
+drop policy if exists "assessments: nur eigene lesen" on assessments;
+create policy "assessments: nur eigene lesen" on assessments
+  for select using (user_id = auth.uid());
+
+-- Senden laeuft ueber die Aktion chat_send, die Gate-Pruefung und
+-- sender_id selbst setzt. Die Insert-Policy ist damit ueberfluessig.
+drop policy if exists "chat: senden bei offenem Gate" on chat_messages;

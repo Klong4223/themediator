@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { supabase, callAI } from "../supabase.js";
+import { callAI } from "../supabase.js";
 import { C, st, Btn, AIBlock, ErrorNote } from "../ui.jsx";
 import Spiegel from "./Spiegel.jsx";
 import BeziehungsbildGespraech from "./BeziehungsbildGespraech.jsx";
@@ -100,20 +100,19 @@ export default function AboutYou({ membership }) {
 
   if (row === undefined) return <p style={st.hint}>Lade …</p>;
 
-  async function skip() {
-    await supabase.from("assessments").upsert({
-      couple_id: membership.couple_id, user_id: membership.user_id,
-      skipped: true, updated_at: new Date().toISOString(),
-    });
-    await load();
+  // Ueber die Edge Function, obwohl hier nur ein Flag gesetzt wird: so
+  // braucht der Client auf assessments gar keine Schreibrechte mehr.
+  async function setzeUebersprungen(wert) {
+    setError(null);
+    try {
+      await callAI({ action: "assessment_skip", skipped: wert });
+      await load();
+    } catch (e) {
+      setError("Konnte nicht gespeichert werden: " + (e?.message || e));
+    }
   }
-  async function unskip() {
-    await supabase.from("assessments").upsert({
-      couple_id: membership.couple_id, user_id: membership.user_id,
-      skipped: false, updated_at: new Date().toISOString(),
-    });
-    await load();
-  }
+  const skip = () => setzeUebersprungen(true);
+  const unskip = () => setzeUebersprungen(false);
 
   // 0) Übersprungen: freier Weg
   if (row?.skipped && !row?.completed) {

@@ -91,12 +91,12 @@ Begründung: `KONZEPT.md`.
 - `couples`, `couple_members` (role A/B, display_name, report_consent, email_freq)
 - `diary_entries` + `diary_replies` (Dialog-Fäden, `thread_closed`)
 - `conflicts`, `assessments` (Fragebogen + KI-Nachfragen), `probes` (Nachfragen)
-- `ai_profiles` (verdichtetes Profil), `chronicle` (dauerhafte Beobachtungen)
+- `ai_profiles` (verdichtetes Profil), `chronicle` (dauerhafte, abstrahierte
+  Beobachtungen — das Langzeitgedächtnis der Begleitung)
 - `reports`, `mirrors` (mit `status`: running/done/error, `stage`: notizen/bericht)
 - `doc_chats` (verankerte private Gespräche zu Bericht/Spiegel, `kind`+`doc_id`)
 - `chat_messages` (sender_id NULL = KI, `origin` = Herkunft bei getragenen
   Eröffnungen, z.B. `doc_chat:report`), `couple_state` (gate_open)
-- `chronicle` (dauerhafte, abstrahierte Beobachtungen — Langzeitgedächtnis)
 - `device_locks` (PIN-Hash+Salt fuer den Wiedereinstiegs-Schutz, RLS aktiv
   mit **null** Policies — nur die Edge Function per Service Role kommt ran)
 - `email_events`, `admins`
@@ -108,12 +108,17 @@ Backlog 7 für die vollständige Liste. Nur die Edge Function kann sie lesen
 geleert und werden nicht mehr beschrieben.
 
 **Regel für neue Features:** Inhalte werden ausschließlich über
-Edge-Function-Aktionen gelesen und geschrieben. Ein `supabase.from(...)`
-im Frontend liefert bei diesen Spalten Ciphertext, und ein Direkt-Insert
-schreibt Klartext in die Datenbank — beides fällt nicht sofort auf.
-Unverschlüsselt und weiterhin direkt nutzbar sind nur Metadaten
-(`couple_members.report_consent`, `display_name`, `email_freq`,
-`couple_state`, IDs, Zeitstempel, Status-Flags).
+Edge-Function-Aktionen gelesen und geschrieben. Seit dem 07.08.2026 ist
+das **technisch erzwungen**: Clients haben auf allen Inhaltstabellen nur
+noch Leserechte (RLS `for select`), Schreiben geht nur über die Service
+Role. Ein versehentlicher Direkt-Insert scheitert also laut, statt still
+Klartext zu hinterlassen. Lesen bleibt erlaubt — der Client bekäme
+ohnehin nur Ciphertext.
+
+Unverschlüsselt und weiterhin direkt beschreibbar sind nur Metadaten:
+`couple_members` (`report_consent`, `display_name`, `email_freq`).
+Alles andere (IDs, Zeitstempel, Status-Flags, `couple_state`) ist
+lesbar, aber nicht mehr vom Client änderbar.
 
 **Dauerhafte Folge:** auf verschlüsselten Spalten sind `like`/Volltextsuche,
 Sortierung und SQL-seitige Aggregation nicht mehr möglich. Zählungen über
@@ -127,7 +132,9 @@ internen Analysenotizen offengelegt.
 
 **RLS-Prinzip:** Eigene Inhalte nur für sich selbst lesbar. Partner-Profile,
 -Chroniken und -Gespräche sind für Clients gar nicht zugänglich — nur die
-Edge Function (Service Role) liest sie.
+Edge Function (Service Role) liest sie. Seit 07.08.2026 gilt zusätzlich:
+Clients haben auf Inhaltstabellen **nur noch Leserechte**, jedes Schreiben
+läuft über die Edge Function.
 
 ### Aktionen der Edge Function
 
@@ -137,7 +144,7 @@ Edge Function (Service Role) liest sie.
 `daily_digest`, `lock_status`, `lock_set`, `lock_remove`, `lock_verify`,
 `lock_reset_request`, `lock_reset_confirm`, `about_you_get`, `diary_list`,
 `conflicts_list`, `chat_list`, `chat_send`, `reports_list`, `mirrors_list`,
-`doc_chat_list`, `enc_status`, `delete_account`, `admin_stats`
+`doc_chat_list`, `assessment_skip`, `enc_status`, `delete_account`, `admin_stats`
 
 Die `*_list`-Aktionen und `chat_send` sind mit der Verschlüsselung
 entstanden: sie ersetzen die früheren Direktzugriffe des Frontends und
@@ -156,6 +163,8 @@ Browser-Tabs keine Klartext-Zeilen erzeugen. Diese Kompatibilität kann
 nach ein paar Wochen entfallen.
 
 `about_you_get` liefert Fragebogen, Profil und Chronik entschlüsselt.
+`assessment_skip` setzt nur das Überspringen-Flag — liegt trotzdem hier,
+damit auf `assessments` gar keine Client-Schreibrechte mehr nötig sind.
 `enc_status` ist ein Admin-Diagnosewerkzeug: zählt je Spalte, wie viel noch
 Klartext ist — liefert nur Zahlen, nie Inhalte.
 
