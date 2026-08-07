@@ -34,7 +34,10 @@ export default function Report({ membership, onGespraech }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [letzterFehler, setLetzterFehler] = useState(false);
-  const [warnungDuenn, setWarnungDuenn] = useState(false);
+  // Materialstand: reicht es fuer ein Beziehungsbild? Kommt aus derselben
+  // Quelle wie die Server-Sperre, damit Anzeige und Durchsetzung nicht
+  // auseinanderlaufen koennen.
+  const [material, setMaterial] = useState(null);
   const [meilensteinKey, setMeilensteinKey] = useState(0);
 
   // Solange der Server "running" sagt, pollt die Seite weiter — auch nach
@@ -82,6 +85,9 @@ export default function Report({ membership, onGespraech }) {
     } catch (e) {
       setError("Beziehungsbilder konnten nicht geladen werden: " + (e?.message || e));
     }
+    try {
+      setMaterial(await callAI({ action: "meilensteine" }));
+    } catch { /* ohne Materialstand faellt nur die Fortschrittsanzeige weg */ }
   }
   useEffect(() => { load(); }, []);
 
@@ -96,18 +102,13 @@ export default function Report({ membership, onGespraech }) {
     setMeilensteinKey((k) => k + 1); // "Der naechste Schritt" sofort nachziehen lassen
   }
 
-  // Entscheidung 1 (KONZEPT.md 6): kein Gate bei duennem Material, aber ein
-  // ehrlicher Hinweis vor dem Klick. bestaetigt=true ueberspringt die Pruefung
-  // (Nutzerin hat die Warnung schon gesehen und bestaetigt).
-  async function generate(bestaetigt = false) {
+  // Seit 07.08.2026 keine wegklickbare Warnung mehr, sondern eine echte
+  // Untergrenze — die der Server ohnehin durchsetzt. Grund: alle bis dahin
+  // erstellten Beziehungsbilder entstanden unterhalb der alten Warnschwelle,
+  // sie wurde jedes Mal bestaetigt, und Nutzerinnen berichteten, dass ihr
+  // eigener Text dabei zu deutlich zur anderen Person durchkam.
+  async function generate() {
     setError(null); setLetzterFehler(false);
-    if (!bestaetigt) {
-      try {
-        const m = await callAI({ action: "meilensteine" });
-        if (m?.bild_duenn) { setWarnungDuenn(true); return; }
-      } catch { /* Pruefung optional — im Zweifel einfach erstellen lassen */ }
-    }
-    setWarnungDuenn(false);
     setBusy(true);
     // Die Benachrichtigung der anderen Seite loest der Server jetzt selbst
     // aus, sobald der Bericht wirklich fertig ist (report_poll) — "fertig"
@@ -146,7 +147,7 @@ export default function Report({ membership, onGespraech }) {
         <ErrorNote>{error}</ErrorNote>
         {letzterFehler && (
           <div style={{ marginBottom: 14 }}>
-            <Btn onClick={() => generate(true)} disabled={busy}>
+            <Btn onClick={generate} disabled={busy}>
               {busy ? "Neuer Versuch läuft …" : "Erneut versuchen"}
             </Btn>
           </div>
@@ -165,28 +166,38 @@ export default function Report({ membership, onGespraech }) {
         {both && (
           <div style={{ textAlign: "center", marginTop: 16 }}>
             <Convergence />
-            {warnungDuenn ? (
+            {material?.bild_moeglich === false ? (
+              // Kein "trotzdem erstellen" mehr: bei zu wenig Material wuerde
+              // der Bericht den eigenen Text zu deutlich wiedergeben. Statt
+              // einer Warnung deshalb der Grund und der eigene Fortschritt.
               <div style={{ ...st.card, background: C.paper, textAlign: "left", marginTop: 4 }}>
-                <p style={{ ...st.body, margin: 0 }}>
-                  Ihr habt bisher wenig geteilt — das Bild wird entsprechend vorsichtig ausfallen.
-                  Trotzdem erstellen?
-                </p>
-                <div style={{ display: "flex", gap: 8, marginTop: 10, justifyContent: "center" }}>
-                  <Btn onClick={() => generate(true)} disabled={busy}>
-                    {busy ? "Wird gestartet …" : "Trotzdem erstellen"}
-                  </Btn>
-                  <Btn variant="ghost" onClick={() => setWarnungDuenn(false)} disabled={busy}>Abbrechen</Btn>
-                </div>
+                <p style={{ ...st.body, margin: 0 }}>{material.grund}</p>
+                {material.mein_umfang < material.mindestumfang && (
+                  <div style={{ marginTop: 14 }}>
+                    <div style={{ height: 6, background: C.line, borderRadius: 3, overflow: "hidden" }}>
+                      <div style={{
+                        height: 6, borderRadius: 3, background: C.a,
+                        width: `${Math.min(100, Math.round((material.mein_umfang / material.mindestumfang) * 100))}%`,
+                      }} />
+                    </div>
+                    <p style={{ ...st.hint, marginTop: 6, marginBottom: 0 }}>
+                      Dein Anteil: etwa {Math.min(100, Math.round((material.mein_umfang / material.mindestumfang) * 100))} %
+                      — schreib im Tagebuch oder unter „Themen &amp; Konflikte" weiter.
+                    </p>
+                  </div>
+                )}
               </div>
             ) : (
-              <Btn onClick={() => generate(false)} disabled={busy}>
-                {busy ? "Wird gestartet …" : reports.length ? "Neues Beziehungsbild erstellen" : "Beziehungsbild erstellen"}
-              </Btn>
+              <>
+                <Btn onClick={generate} disabled={busy}>
+                  {busy ? "Wird gestartet …" : reports.length ? "Neues Beziehungsbild erstellen" : "Beziehungsbild erstellen"}
+                </Btn>
+                <p style={{ ...st.hint, marginTop: 10 }}>
+                  Die Analyse läuft im Hintergrund und kann 10–20 Minuten dauern, weil Zwischenraum
+                  gründlich nachdenkt — du kannst die Seite verlassen und später zurückkommen.
+                </p>
+              </>
             )}
-            <p style={{ ...st.hint, marginTop: 10 }}>
-              Die Analyse läuft im Hintergrund und kann 10–20 Minuten dauern, weil Zwischenraum
-              gründlich nachdenkt — du kannst die Seite verlassen und später zurückkommen.
-            </p>
           </div>
         )}
       </section>
@@ -204,7 +215,7 @@ export default function Report({ membership, onGespraech }) {
                   : `${phasenText(r)} Das kann 10–20 Minuten dauern, weil Zwischenraum gründlich nachdenkt. Du kannst die Seite ruhig verlassen — der Bericht erscheint hier, sobald er fertig ist.`}
               </p>
               {both && dauertUngewoehnlichLang(r) && (
-                <Btn onClick={() => generate(true)} disabled={busy}>
+                <Btn onClick={generate} disabled={busy}>
                   {busy ? "Neuer Versuch läuft …" : "Noch einmal versuchen"}
                 </Btn>
               )}
@@ -215,7 +226,7 @@ export default function Report({ membership, onGespraech }) {
                 Die Erstellung ist fehlgeschlagen{r.error_msg ? `: ${r.error_msg}` : "."}
               </p>
               {both && (
-                <Btn onClick={() => generate(true)} disabled={busy}>
+                <Btn onClick={generate} disabled={busy}>
                   {busy ? "Neuer Versuch läuft …" : "Noch einmal versuchen"}
                 </Btn>
               )}

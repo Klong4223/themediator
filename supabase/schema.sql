@@ -722,3 +722,19 @@ select cron.schedule(
   where extract(hour from now() at time zone 'Europe/Berlin') = 19;
   $job$
 );
+
+-- ============================================================
+-- Delta 2026-08-07i: Untergrenze fuer das Beziehungsbild
+-- ------------------------------------------------------------
+-- Merkt sich pro Bericht, ob er aus schmalem Material entstanden
+-- ist (wenige verschiedene Quellen). Die Edge Function setzt das
+-- Flag beim Anlegen und schaltet daraufhin im Bericht-Prompt einen
+-- zusaetzlichen Zurueckhaltungs-Block frei -- damit bei duennem
+-- Material nicht die Eingabe der einen Seite fast woertlich bei
+-- der anderen landet.
+--
+-- Die harte Untergrenze selbst (Mindestzeichen je Person) steht
+-- bewusst nur im Code (BILD_MINDESTZEICHEN), nicht in der DB:
+-- sie rechnet mit dem entschluesselten Text, den Postgres nicht
+-- lesen kann.
+alter table reports add column if not exists schmal boolean not null default false;

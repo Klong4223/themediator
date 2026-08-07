@@ -94,7 +94,9 @@ Begründung: `KONZEPT.md`.
 - `conflicts`, `assessments` (Fragebogen + KI-Nachfragen), `probes` (Nachfragen)
 - `ai_profiles` (verdichtetes Profil), `chronicle` (dauerhafte, abstrahierte
   Beobachtungen — das Langzeitgedächtnis der Begleitung)
-- `reports`, `mirrors` (mit `status`: running/done/error, `stage`: notizen/bericht)
+- `reports`, `mirrors` (mit `status`: running/done/error, `stage`: notizen/bericht;
+  `reports.schmal` = aus wenigen Quellen entstanden, schaltet den
+  Zurückhaltungs-Block im Prompt frei)
 - `doc_chats` (verankerte private Gespräche zu Bericht/Spiegel, `kind`+`doc_id`)
 - `chat_messages` (sender_id NULL = KI, `origin` = Herkunft bei getragenen
   Eröffnungen, z.B. `doc_chat:report`), `couple_state` (gate_open)
@@ -167,6 +169,45 @@ nach ein paar Wochen entfallen.
 `about_you_get` liefert Fragebogen, Profil und Chronik entschlüsselt.
 `assessment_skip` setzt nur das Überspringen-Flag — liegt trotzdem hier,
 damit auf `assessments` gar keine Client-Schreibrechte mehr nötig sind.
+
+### Untergrenze für das Beziehungsbild (07.08.2026)
+
+Nutzerinnen-Rückmeldung: bei wenig Material gab das Beziehungsbild die
+Eingaben der einen Seite so erkennbar wieder, dass die andere sie fast
+wörtlich zurücklas. Kein Zitat — fehlende Abstraktion. Unterhalb einer
+gewissen Menge *ist* Zusammenfassen faktisch Wiedergeben, damit ist es ein
+Streifschuss auf Regel 1.
+
+Die alte Absicherung (`bild_duenn`, gemessen in Chronik-Einträgen, nur als
+wegklickbare Warnung) hat an beiden Enden versagt: alle neun bis dahin
+erzeugten Berichte entstanden unterhalb der Schwelle, und Chronik war ein
+unbrauchbares Maß (eine Nutzerin 21 Tagebucheinträge / 0 Chronik-Zeilen,
+eine andere 1 Eintrag / 3 Zeilen — Ursache war ein stiller `JSON.parse`-
+Fehler, seither über `jsonAusAntwort()` abgefangen). Ersetzt durch zwei
+getrennte Mechanismen:
+
+1. **`BILD_MINDESTZEICHEN` (2.500)** — entschlüsselte Zeichen je Person über
+   alle Quellen (`materialUmfang()`). Darunter lehnt die `report`-Aktion mit
+   403 und `material_fehlt: true` ab, nicht nur das Frontend. Bewusst **rein
+   mengenbasiert, ohne Mindestanzahl an Einträgen** (Peter: „auch ein
+   Eintrag mit viel Kontext kann ausreichen") — ein einziger langer, dichter
+   Eintrag genügt.
+2. **`SCHMALE_QUELLEN` (< 3)** — setzt `reports.schmal` und schaltet damit
+   einen Zurückhaltungs-Block im Bericht-Prompt frei: keine nacherzählten
+   Situationen auch nicht paraphrasiert, kein behauptetes Muster aus einer
+   einzelnen Äußerung, offen benennen was nicht bekannt ist, lieber kurz als
+   vollständig. Trägt das Einzelquellen-Risiko, ohne dafür zu sperren.
+
+`meilensteine` liefert dafür `bild_moeglich`, `mein_umfang` und
+`mindestumfang`. Über die andere Person weiterhin **nur** ein
+`partner_bereit`-Ja/Nein, nie eine Zahl — ein Fleiß-Maß über den Partner
+wäre bei einem Paar in der Krise ein Vorwurf.
+
+Verifiziert (07.08.2026, Wegwerf-Paar, rückstandsfrei aufgeräumt): ohne
+Material gesperrt, mit kurzem Eintrag gesperrt, mit *einem* Eintrag von
+2.700 Zeichen freigegeben; der erzeugte Bericht enthielt keine der
+konkreten Situationen aus den Eingaben (Umzug, Auto, Tisch, Beruf) und
+benannte den dünnen Materialstand mehrfach von selbst.
 
 `doc_chat_verdichten` arbeitet die verankerten Gespräche ins Profil und die
 Chronik ein — sie waren bis 07.08.2026 die einzige Textquelle, die **nicht**

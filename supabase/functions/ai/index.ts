@@ -264,7 +264,7 @@ async function tokenHash(token: string): Promise<string> {
 // in ihren Log-Ausgaben. Im Funktionsrumpf waere das zur Laufzeit zwar
 // unkritisch, aber Nutzung-vor-Deklaration hat hier schon einmal einen
 // Produktionsfehler verursacht (siehe CLAUDE.md) -- also gar nicht erst.
-const VERSION = "2026-08-07u";
+const VERSION = "2026-08-07v";
 
 // ─── Verschluesselung ruhender Inhalte (CLAUDE.md Backlog Punkt 7) ──
 // AES-256-GCM ueber Deno's natives crypto.subtle -- kein externes Paket,
@@ -413,6 +413,24 @@ async function jsonLesen<T>(enc: string | null | undefined, alt: unknown, wo: st
   return (alt ?? null) as T | null;
 }
 
+// JSON aus einer Modellantwort holen. Reasoning-Modelle stellen dem
+// eigentlichen Objekt gern einen erklaerenden Satz voran, obwohl der
+// Prompt "NUR valides JSON" verlangt. Das blosse Entfernen der
+// Code-Zaeune reicht dann nicht -- und weil alle Aufrufer den Fehler
+// still abfangen, faellt es nicht auf. Bei der Chronik hat genau das
+// dazu gefuehrt, dass eine Person mit 21 Tagebucheintraegen keinen
+// einzigen Chronikeintrag hatte.
+function jsonAusAntwort<T>(roh: string): T | null {
+  const ohneZaun = roh.replace(/```json|```/g, "").trim();
+  try { return JSON.parse(ohneZaun) as T; } catch { /* zweiter Versuch */ }
+  const von = ohneZaun.indexOf("{");
+  const bis = ohneZaun.lastIndexOf("}");
+  if (von >= 0 && bis > von) {
+    try { return JSON.parse(ohneZaun.slice(von, bis + 1)) as T; } catch { /* aufgeben */ }
+  }
+  return null;
+}
+
 // Tolerante Variante fuer aggregierte Listen, die in einen Prompt fliessen
 // (Chronik, Material fuer Beziehungsbild/Spiegel): Dort stehen Dutzende
 // Zeilen nebeneinander, und eine einzelne unlesbare darf nicht die ganze
@@ -431,11 +449,35 @@ async function entschluesselnTolerant(
   }
 }
 
-// Schwelle fuer "bild_duenn" (KONZEPT.md 7.2): je Person mindestens so viele
-// Chronik-Eintraege, sonst zeigt das Frontend vor dem Erstellen eine
-// bestaetigbare Warnung. Chronik statt Zeichenzahl, weil sie Verstandenes
-// zaehlt statt Geschriebenes und deshalb kaum manipulierbar ist.
-const CHRONIK_SCHWELLE = 5;
+// Untergrenze fuer das Beziehungsbild, je Person, in Zeichen KLARTEXT
+// (Tagebuch, Dialogantworten, Konflikte, beantwortete Nachfragen,
+// Fragebogen).
+//
+// Vorgeschichte, damit das nicht versehentlich zurueckgedreht wird:
+// Frueher zaehlte hier die Zahl der Chronik-Eintraege, und das Frontend
+// zeigte nur eine wegklickbare Warnung. Beides war falsch.
+//   1. Die Chronik war als Mass unbrauchbar -- sie entsteht ueber einen
+//      Modellaufruf, der still scheitern konnte. Eine Person mit 21
+//      Tagebucheintraegen hatte 0 Chronikeintraege und galt als "duenn",
+//      eine mit einem einzigen Eintrag hatte 3 und galt als reich.
+//   2. Eine Warnung reicht nicht: alle neun bisher erstellten
+//      Beziehungsbilder entstanden unterhalb der Schwelle, sie wurde
+//      jedes Mal weggeklickt.
+// Nutzerinnen berichteten daraufhin, dass bei wenig Material der eigene
+// Text zu deutlich durchscheint und bei der anderen Person ankommt --
+// ein Bruch von Regel 1, nicht bloss maessige Qualitaet.
+//
+// Warum Zeichen und NICHT die Zahl der Beitraege: ein einzelner, langer
+// und nachdenklicher Eintrag kann mehr hergeben als fuenf Stichworte.
+// Die Gefahr ist nicht die Stueckzahl, sondern ob genug da ist, um zu
+// abstrahieren. Dass bei sehr wenigen Quellen kein Muster erkennbar ist,
+// faengt der Bericht selbst ab (siehe SCHMALE_QUELLEN).
+const BILD_MINDESTZEICHEN = 2500;
+
+// Ab wie wenigen getrennten Beitraegen der Bericht bewusst zurueckhaltender
+// schreibt: keine nacherzaehlten Situationen, kein Einzelfall als Muster,
+// und offen benennen, was noch nicht bekannt ist.
+const SCHMALE_QUELLEN = 3;
 
 // Falls ein Lauf nie zu Ende gepollt wird (z.B. beide Browser-Tabs
 // geschlossen, bevor der letzte Poll-Tick kam), bleibt die Zeile sonst fuer
@@ -1037,8 +1079,8 @@ ${answersText}
 
 Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","...","..."]}`);
 
-      let fragen: string[] = [];
-      try { fragen = JSON.parse(raw.replace(/```json|```/g, "").trim()).fragen.slice(0, 3); } catch { fragen = []; }
+      const gelesen = jsonAusAntwort<{ fragen?: string[] }>(raw);
+      const fragen = Array.isArray(gelesen?.fragen) ? gelesen.fragen.slice(0, 3) : [];
       const followups = fragen.map((q) => ({ q }));
       await admin.from("assessments").update({
         followups_enc: await jsonVerschluesseln(followups), followups: null,
@@ -1110,12 +1152,9 @@ ${partnerProfile || "(leer)"}
 
 Antworte NUR mit validem JSON ohne Backticks: {"open": true|false, "begruendung": "100-200 Woerter, an beide gerichtet, motivierend und ehrlich — bei false: was noch fehlt, ohne Inhalte einer Seite zu offenbaren"}`);
 
-      let open = false, begruendung = verdict;
-      try {
-        const p = JSON.parse(verdict.replace(/```json|```/g, "").trim());
-        open = heuristik && !!p.open;
-        begruendung = p.begruendung;
-      } catch { open = false; }
+      const p = jsonAusAntwort<{ open?: boolean; begruendung?: string }>(verdict);
+      const open = heuristik && !!p?.open;
+      const begruendung = p?.begruendung ?? verdict;
 
       await admin.from("couple_state").upsert({
         couple_id: member.couple_id, gate_open: open, readiness: begruendung, updated_at: new Date().toISOString(),
@@ -1198,20 +1237,24 @@ ${partnerProfile}`);
         .select("gate_open, readiness").eq("couple_id", member.couple_id).maybeSingle();
       const chatOffen = !!state?.gate_open;
 
-      const chronikAnzahl = async (uid: string) => {
-        const { count } = await admin.from("chronicle")
-          .select("id", { count: "exact", head: true }).eq("user_id", uid);
-        return count ?? 0;
-      };
-      const bildDuenn = !partner || !(
-        (await chronikAnzahl(user.id)) >= CHRONIK_SCHWELLE &&
-        (await chronikAnzahl(partner.user_id)) >= CHRONIK_SCHWELLE
-      );
+      // Materialumfang beider Seiten -- entscheidet, ob das Beziehungsbild
+      // ueberhaupt moeglich ist. Bewusst KEINE Angabe darueber, wie viel
+      // die andere Person geschrieben hat: das waere ein Fleiss-Mass ueber
+      // sie und bei einem Paar in der Krise ein Vorwurf (siehe die
+      // Barometer-Entscheidung in KONZEPT.md). Nur die eigene Zahl und ein
+      // Ja/Nein fuer die Gegenseite.
+      const meins = await materialUmfang(admin, member.couple_id, user.id);
+      const seins = partner
+        ? await materialUmfang(admin, member.couple_id, partner.user_id)
+        : { zeichen: 0, quellen: 0 };
+      const bildMoeglich = !!partner
+        && meins.zeichen >= BILD_MINDESTZEICHEN
+        && seins.zeichen >= BILD_MINDESTZEICHEN;
 
       // ACHTUNG: Diese Texte gehen direkt an die Oberflaeche, sind KEIN
       // Prompt an das Modell -- deshalb hier normale deutsche Umlaute
       // verwenden, anders als sonst in dieser Datei ueblich.
-      let naechster: "partner_fehlt" | "freigabe_fehlt" | null = null;
+      let naechster: "partner_fehlt" | "freigabe_fehlt" | "material_fehlt" | null = null;
       let grund = "";
       if (!partner) {
         naechster = "partner_fehlt";
@@ -1223,6 +1266,17 @@ ${partnerProfile}`);
         if (!freigabeIch && !freigabePartner) grund = "Für ein Beziehungsbild müsst ihr beide freigeben — noch hat keiner von euch freigegeben.";
         else if (!freigabeIch) grund = `${nameP} hat bereits freigegeben — deine Freigabe steht noch aus.`;
         else grund = `Du hast freigegeben — ${nameP}s Freigabe steht noch aus.`;
+      } else if (!bildMoeglich) {
+        naechster = "material_fehlt";
+        const eigenesFehlt = meins.zeichen < BILD_MINDESTZEICHEN;
+        grund = eigenesFehlt
+          ? "Für ein Beziehungsbild braucht Zwischenraum von dir noch etwas mehr. " +
+            "Bei wenig Material bliebe es entweder vage — oder es gäbe zu deutlich " +
+            "wieder, was du geschrieben hast, und genau das soll die andere Person " +
+            "nie im Original lesen. Ein ausführlicher Eintrag kann schon reichen."
+          : "Von dir ist genug da. Zwischenraum braucht noch etwas mehr von der " +
+            "anderen Seite — sonst würde ihr Teil des Bildes zu nah an ihren " +
+            "eigenen Worten bleiben.";
       }
 
       return json({
@@ -1230,7 +1284,12 @@ ${partnerProfile}`);
         partner_da: !!partner,
         freigabe_ich: freigabeIch,
         freigabe_partner: freigabePartner,
-        bild_duenn: bildDuenn,
+        bild_moeglich: bildMoeglich,
+        // Nur der eigene Fortschritt als Zahl. Von der anderen Person
+        // bewusst nur ein Ja/Nein -- kein Fleiss-Mass ueber sie.
+        mein_umfang: meins.zeichen,
+        mindestumfang: BILD_MINDESTZEICHEN,
+        partner_bereit: !!partner && seins.zeichen >= BILD_MINDESTZEICHEN,
         chat_offen: chatOffen,
         chat_grund: state?.readiness ?? "",
       });
@@ -1245,6 +1304,26 @@ ${partnerProfile}`);
       if (!(all.length === 2 && all.every((m) => m.report_consent))) {
         return json({ error: "Das Beziehungsbild braucht die aktive Freigabe von euch beiden." }, 403);
       }
+
+      // Untergrenze SERVERSEITIG durchsetzen, nicht nur im Frontend warnen.
+      // Alle neun bisher erstellten Beziehungsbilder entstanden unterhalb
+      // der alten Warnschwelle -- sie wurde jedes Mal weggeklickt, und
+      // Nutzerinnen berichteten daraufhin, dass ihr eigener Text zu
+      // deutlich zur anderen Person durchkam.
+      const umfMe = await materialUmfang(admin, member.couple_id, user.id);
+      const umfP = await materialUmfang(admin, member.couple_id, partner.user_id);
+      if (umfMe.zeichen < BILD_MINDESTZEICHEN || umfP.zeichen < BILD_MINDESTZEICHEN) {
+        return json({
+          error: umfMe.zeichen < BILD_MINDESTZEICHEN
+            ? "Für ein Beziehungsbild braucht Zwischenraum von dir noch etwas mehr. Bei so wenig Material gäbe der Bericht zu deutlich wieder, was du geschrieben hast — und das soll die andere Person nie im Original lesen."
+            : "Zwischenraum braucht noch etwas mehr von der anderen Seite, sonst bliebe ihr Teil des Bildes zu nah an ihren eigenen Worten.",
+          material_fehlt: true,
+        }, 403);
+      }
+      // Schmale Materialbasis heisst nicht "zu wenig", sondern "zu wenige
+      // getrennte Quellen, um ein Muster zu erkennen". Der Bericht wird
+      // dann bewusst zurueckhaltender formuliert (siehe Prompt unten).
+      const schmal = umfMe.quellen < SCHMALE_QUELLEN || umfP.quellen < SCHMALE_QUELLEN;
 
       await haengendeLaeufeAufraeumen(admin, "reports", member.couple_id);
 
@@ -1263,6 +1342,8 @@ AUFGABE: Du bereitest ein "Beziehungsbild" vor. Erstelle zunaechst interne Analy
 5. PRAEGUNGEN: Welche Muster aus Herkunftsfamilie/Vergangenheit wirken erkennbar in die Beziehung hinein?
 6. DIE FRAGEN: Welche Frage beantwortet jede Person gerade tatsaechlich? (z.B. "Wie retten wir es?" vs. "Kann ich es noch wollen?") Sind es dieselben?
 7. HOFFNUNGEN & GRENZEN: Welche Hoffnungen sind noch da? Wo gibt es womoeglich echte Unvereinbarkeiten, die man nicht wegmoderieren sollte?
+${schmal ? `
+SCHMALE MATERIALBASIS: Mindestens eine Seite hat bisher nur sehr wenige getrennte Beitraege geschrieben. Halte deshalb strikt auseinander, was du WEISST und was du nur VERMUTEST. Markiere jede Beobachtung, die auf einer einzigen Aeusserung beruht, ausdruecklich als Einzelnennung ("einmal erwaehnt", "bisher nur an einer Stelle"). Erfinde keine Muster, um die Notizen voller wirken zu lassen -- schreibe stattdessen ausdruecklich hin, was ueber diese Person noch nicht bekannt ist. Eine kurze, ehrliche Notiz ist besser als eine lange, die Sicherheit vortaeuscht.` : ""}
 
 MATERIAL ${nameMe}:
 ${matMe}
@@ -1277,6 +1358,7 @@ Antworte nur mit den nummerierten Notizen.`;
       const { data: zeile } = await admin.from("reports").insert({
         couple_id: member.couple_id, content: null, status: "running",
         stage: "notizen", openai_response_id: responseId, requested_by: user.id,
+        schmal,
       }).select("id").single();
 
       return json({ ok: true, id: zeile?.id, status: "running" });
@@ -1323,6 +1405,15 @@ TEIL 3 — WAS ZWISCHEN EUCH PASSIERT
 Nicht wer recht hat, sondern: Wo beschreibt ihr dieselbe Situation voellig unterschiedlich? Wo fuehlt ihr dasselbe mit anderen Worten? Wo missversteht ihr euch womoeglich seit Langem? Welche Beduerfnisse stehen hinter dem Verhalten? Und besonders wichtig: Pruefe, ob beide gerade dieselbe Frage beantworten — oder ob einer fragt "Wie machen wir es besser?" waehrend die andere Person fragt "Kann ich das noch aus vollem Herzen wollen?". Wenn die Fragen verschieden sind, benenne das klar und wohlwollend als ersten Klaerungsschritt.
 
 STRIKTE REGELN: Keine woertlichen Zitate aus dem Material. Keine Detailoffenbarungen, die eine Person erkennbar nur im Vertrauen geschrieben hat (z.B. konkrete dritte Personen, intime Einzelheiten) — beschreibe stattdessen die dahinterliegenden Gefuehle und Beduerfnisse. Beide Teile muessen in Tiefe und Wohlwollen ausgewogen sein. Kein Fazit, keine Empfehlung zu bleiben oder zu gehen — der Bericht schafft Verstaendnis, die Entscheidungen gehoeren dem Paar.
+${zeile.schmal ? `
+BESONDERE ZURUECKHALTUNG — SCHMALE MATERIALBASIS:
+Mindestens eine Seite hat bisher nur sehr wenige getrennte Beitraege geschrieben. Damit besteht die konkrete Gefahr, dass ihr Teil des Berichts zur Nacherzaehlung dessen wird, was sie geschrieben hat — und die andere Person damit praktisch ihren Originaltext liest. Das waere ein Bruch des Kernversprechens dieser Anwendung. Deshalb hier zusaetzlich und ausnahmslos:
+- Erzaehle KEINE Situationen nach, auch nicht umschrieben oder verallgemeinert. Kein "wenn es um X geht, erlebt sie...", wenn X nur einmal vorkam.
+- Bleibe auf der Ebene von Beduerfnissen, Gefuehlen und Wuenschen, die ueber den einzelnen Anlass hinausweisen. Was auch dann noch gilt, wenn man den konkreten Anlass weglaesst.
+- Behaupte kein Muster, wo du nur eine Aeusserung hast. Schreibe stattdessen ehrlich, dass sich das noch nicht sagen laesst.
+- Benenne offen, was ueber diese Person noch nicht bekannt ist. Das ist kein Makel des Berichts, sondern eine ehrliche Auskunft und eine Einladung, mehr zu schreiben.
+- Halte diesen Teil lieber KURZ als vollstaendig. Fuelle nichts auf. Ein kurzer, ehrlicher Abschnitt ist unendlich viel besser als ein langer, der Vertrauliches durchscheinen laesst.
+- Formuliere im dritten Teil entsprechend vorsichtiger: Vermutungen als Vermutungen, Fragen als Fragen.` : ""}
 
 DEINE INTERNE TIEFENANALYSE:
 ${notizen}
@@ -1693,8 +1784,8 @@ Stelle lieber eine gute Frage als drei mittelmaessige. Wenn dir gerade nichts wi
 
 Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","..."]}`, 900);
 
-      let fragen: string[] = [];
-      try { fragen = JSON.parse(raw.replace(/```json|```/g, "").trim()).fragen.slice(0, 3); } catch { fragen = []; }
+      const gelesen = jsonAusAntwort<{ fragen?: string[] }>(raw);
+      const fragen = Array.isArray(gelesen?.fragen) ? gelesen.fragen.slice(0, 3) : [];
       if (fragen.length) {
         await admin.from("probes").insert(await Promise.all(fragen.map(async (q) => ({
           couple_id: member.couple_id, user_id: user.id, q: await verschluesseln(q),
@@ -1916,6 +2007,52 @@ Antworte nur mit deiner Moderationsnachricht.`, 2000);
 
 // Chronik: dauerhaft wachsendes, abstrahiertes Langzeitgedaechtnis.
 // Material einer Person fuer die Tiefenanalysen.
+// Wie viel hat diese Person tatsaechlich beigetragen? Zeichen auf
+// KLARTEXT gerechnet -- Ciphertext ist rund 1,4-mal so lang, mit der
+// Rohlaenge waere jede Schwelle still nach unten verschoben.
+//
+// "quellen" zaehlt getrennte Beitraege (Eintraege, Konflikte,
+// beantwortete Nachfragen). Es ist KEINE Huerde, sondern steuert nur,
+// wie zurueckhaltend der Bericht formuliert.
+async function materialUmfang(
+  admin: ReturnType<typeof createClient>, coupleId: string, uid: string,
+): Promise<{ zeichen: number; quellen: number }> {
+  const { data: d } = await admin.from("diary_entries").select("id, content")
+    .eq("couple_id", coupleId).eq("user_id", uid);
+  const { data: r } = await admin.from("diary_replies").select("id, content")
+    .eq("couple_id", coupleId).eq("user_id", uid).eq("role", "user");
+  const { data: k } = await admin.from("conflicts").select("id, content")
+    .eq("couple_id", coupleId).eq("user_id", uid);
+  const { data: p } = await admin.from("probes").select("id, a")
+    .eq("couple_id", coupleId).eq("user_id", uid).not("a", "is", null);
+  const { data: a } = await admin.from("assessments").select("answers, answers_enc")
+    .eq("couple_id", coupleId).eq("user_id", uid).maybeSingle();
+
+  const laengen = await Promise.all([
+    ...(d ?? []).map((x) => entschluesselnTolerant(x.content, "umfang.diary")),
+    ...(r ?? []).map((x) => entschluesselnTolerant(x.content, "umfang.reply")),
+    ...(k ?? []).map((x) => entschluesselnTolerant(x.content, "umfang.conflict")),
+    ...(p ?? []).map((x) => entschluesselnTolerant(x.a, "umfang.probe")),
+  ]);
+  let zeichen = laengen.reduce((n, t) => n + t.length, 0);
+
+  const antworten = await jsonLesen<Record<string, { frage: string; antwort: string }>>(
+    a?.answers_enc, a?.answers, `assessments.answers user=${uid}`);
+  if (antworten) {
+    // Nur die Antworten zaehlen, nicht die vorgegebenen Fragetexte --
+    // sonst zaehlte allein das Durchklicken des Fragebogens als Material.
+    zeichen += Object.values(antworten)
+      .reduce((n, x) => n + String(x?.antwort ?? "").length, 0);
+  }
+
+  // Dialogantworten sind Vertiefung eines vorhandenen Eintrags, keine
+  // eigenstaendige Quelle -- sie zaehlen bei den Zeichen mit, aber nicht
+  // bei der Breite.
+  const quellen = (d ?? []).length + (k ?? []).length + (p ?? []).length
+    + (antworten ? 1 : 0);
+  return { zeichen, quellen };
+}
+
 async function materialFuer(
   admin: ReturnType<typeof createClient>, coupleId: string, uid: string,
 ): Promise<string> {
@@ -2082,14 +2219,20 @@ Neue Information:
 """${newInfo}"""
 
 Antworte NUR mit validem JSON ohne Backticks: {"beobachtungen":["...","..."]}`, 1200);
-    const arr = JSON.parse(raw.replace(/```json|```/g, "").trim()).beobachtungen ?? [];
-    if (Array.isArray(arr) && arr.length) {
-      await admin.from("chronicle").insert(
+    const gelesen = jsonAusAntwort<{ beobachtungen?: string[] }>(raw);
+    const arr = Array.isArray(gelesen?.beobachtungen) ? gelesen.beobachtungen : [];
+    if (arr.length) {
+      const { error } = await admin.from("chronicle").insert(
         await Promise.all(arr.slice(0, 3).map(async (o: string) => ({
           couple_id: coupleId, user_id: userId,
           observation: await verschluesseln(String(o).slice(0, 1000)),
         }))),
       );
+      // Fehler hier nicht verschlucken: die Chronik ist das Langzeit-
+      // gedaechtnis, und ein stiller Ausfall faellt monatelang nicht auf.
+      if (error) console.error(`Chronik-Insert fehlgeschlagen: ${error.code ?? "?"} ${error.message}`);
+    } else {
+      console.error(`Chronik: Modellantwort ohne verwertbare Beobachtungen (Laenge ${raw.length}).`);
     }
   } catch (e) {
     // BEWUSST nur die Fehlerart, nicht die Meldung: scheitert hier

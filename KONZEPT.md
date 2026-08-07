@@ -370,7 +370,7 @@ Die Meilensteine in der Reihenfolge, in der man sie erlebt:
 |---|---|---|
 | Der Zwischenraum öffnet sich | Partner beigetreten | Einladungscode direkt mit anzeigen |
 | Beziehungsbild möglich | beide freigegeben | welche der beiden Freigaben fehlt |
-| Beziehungsbild wird tragfähig | genug Material auf beiden Seiten | Hinweis, kein Riegel (Entscheidung 1) |
+| Beziehungsbild wird tragfähig | genug Material auf beiden Seiten | Riegel, kein Hinweis (revidiert, s.u.) |
 | Euer Raum öffnet sich | `gate_open` | die vorhandene `readiness`-Begründung |
 
 **3. Keine Fleiß-Maße über die andere Person.** Sichtbar sind ausschließlich
@@ -486,7 +486,10 @@ grund            string   – ein Satz im Klartext, direkt anzeigbar
 partner_da       boolean
 freigabe_ich     boolean
 freigabe_partner boolean
-bild_duenn       boolean  – nur fuer die Warnung (Entscheidung 1)
+bild_moeglich    boolean  – harte Untergrenze erreicht?
+mein_umfang      int      – eigene Zeichen (nur ueber sich selbst!)
+mindestumfang    int      – BILD_MINDESTZEICHEN
+partner_bereit   boolean  – Ja/Nein, nie eine Zahl
 chat_offen       boolean
 chat_grund       string   – aus couple_state.readiness
 ```
@@ -495,14 +498,47 @@ chat_grund       string   – aus couple_state.readiness
 steht der Wortlaut an einer Stelle und kann nicht zwischen Oberflächen
 auseinanderlaufen.
 
-**`bild_duenn` ist die einzige mengenbasierte Größe im ganzen System** und
-verlässt die Funktion nur als `true`/`false`, nie als Zahl. Sie speist
-ausschließlich den Warnhinweis vor dem Erstellen — daraus wird bewusst keine
-Fortschrittsanzeige. Schwelle als Konstante am Dateikopf; Startwert: je
-Person mindestens 5 Chronik-Einträge. Chronik statt Zeichenzahl, weil sie
-*Verstandenes* zählt statt *Geschriebenes* und deshalb kaum manipulierbar
-ist: Wer viel schreibt, aber nichts Neues sagt, erzeugt keine neuen
-Einträge.
+**Revidiert am 07.08.2026 — „Warnen, nicht blockieren" war falsch.**
+Die ursprüngliche Entscheidung (`bild_duenn` als bloßer Warnhinweis, Schwelle
+gemessen in Chronik-Einträgen) ist am echten Betrieb gescheitert, und zwar an
+beiden Enden:
+
+- **Der Hinweis wurde ignoriert.** Alle neun bis dahin erzeugten Berichte
+  entstanden unterhalb der Schwelle — eine Warnung, die man wegklickt, um an
+  das zu kommen, worauf man wartet, ist keine.
+- **Chronik-Einträge waren das falsche Maß.** Die Annahme, Chronik zähle
+  *Verstandenes*, stimmt nur, wenn Chronik zuverlässig entsteht. Tat sie
+  nicht: eine Nutzerin hatte 21 Tagebucheinträge und 0 Chronik-Zeilen, eine
+  andere 1 Eintrag und 3 Zeilen. Ursache war ein stiller Parse-Fehler — das
+  Maß hat also nicht Verstehen gemessen, sondern zufälliges Gelingen.
+- **Der eigentliche Schaden.** Nutzerinnen-Rückmeldung: bei dünnem Material
+  gab das Beziehungsbild die Eingaben der einen Seite so erkennbar wieder,
+  dass die andere sie fast wörtlich zurücklas. Das ist ein Streifschuss auf
+  Regel 1 — nicht durch ein Zitat, sondern durch fehlende Abstraktion.
+  Abstraktion braucht Masse; unterhalb einer gewissen Menge *ist* Zusammen-
+  fassen faktisch Wiedergeben.
+
+Ersetzt durch zwei getrennte Mechanismen:
+
+1. **Harte Untergrenze, serverseitig erzwungen.** `BILD_MINDESTZEICHEN`
+   (2.500 entschlüsselte Zeichen je Person, ~400 Wörter) über alle Quellen
+   zusammen. Darunter lehnt die `report`-Aktion mit 403 ab — nicht nur das
+   Frontend. Bewusst **rein mengenbasiert, ohne Mindestanzahl an Einträgen**
+   (Peter, 07.08.2026: „auch ein Eintrag mit viel Kontext kann ausreichen") —
+   ein einziger langer, dichter Eintrag genügt.
+2. **Abgestufter Bericht statt Alles-oder-nichts.** `SCHMALE_QUELLEN` (< 3
+   verschiedene Quellenarten) setzt `reports.schmal`, was im Bericht-Prompt
+   einen Zurückhaltungs-Block freischaltet: keine nacherzählten Situationen
+   auch nicht paraphrasiert, kein behauptetes Muster aus einer einzelnen
+   Äußerung, offen benennen was nicht bekannt ist, lieber kurz als
+   vollständig. Das trägt das Einzelquellen-Risiko, ohne dafür sperren zu
+   müssen.
+
+**Die Fleiß-Maß-Regel bleibt unangetastet:** `mein_umfang` gibt es nur über
+einen selbst. Über die andere Person verlässt die Funktion weiterhin
+ausschließlich ein `partner_bereit`-Ja/Nein, nie eine Zahl — eine
+Fortschrittsanzeige über den Partner wäre bei einem Paar in der Krise ein
+Vorwurf.
 
 ### 7.3 Prompt-Bausteine
 
