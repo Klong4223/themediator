@@ -101,13 +101,22 @@ Begründung: `KONZEPT.md`.
   mit **null** Policies — nur die Edge Function per Service Role kommt ran)
 - `email_events`, `admins`
 
-**Verschlüsselte Spalten (seit 07.08.2026):** `ai_profiles.profile`,
-`chronicle.observation`, `reports.notizen`, `mirrors.notizen`. Nur die Edge
-Function kann sie lesen (`CONTENT_ENC_KEY`). Wer eine dieser Spalten im
-Frontend braucht, muss über eine Aktion gehen — ein Direktzugriff per RLS
-liefert Ciphertext. **Dauerhafte Folge:** auf verschlüsselten Spalten sind
-`like`/Volltextsuche, Sortierung und SQL-seitige Aggregation nicht mehr
-möglich. Bei neuen Features mitdenken.
+**Verschlüsselte Spalten (seit 07.08.2026):** alle Inhaltsspalten außer
+`assessments` — siehe Backlog 7 für die vollständige Liste. Nur die Edge
+Function kann sie lesen (`CONTENT_ENC_KEY`).
+
+**Regel für neue Features:** Inhalte werden ausschließlich über
+Edge-Function-Aktionen gelesen und geschrieben. Ein `supabase.from(...)`
+im Frontend liefert bei diesen Spalten Ciphertext, und ein Direkt-Insert
+schreibt Klartext in die Datenbank — beides fällt nicht sofort auf.
+Unverschlüsselt und weiterhin direkt nutzbar sind nur Metadaten
+(`couple_members.report_consent`, `display_name`, `email_freq`,
+`couple_state`, IDs, Zeitstempel, Status-Flags).
+
+**Dauerhafte Folge:** auf verschlüsselten Spalten sind `like`/Volltextsuche,
+Sortierung und SQL-seitige Aggregation nicht mehr möglich. Zählungen über
+`count(*)` und Filter auf `null` funktionieren weiter (das Admin-Dashboard
+und der Nachfragen-Filter beruhen darauf).
 
 `reports.notizen`/`mirrors.notizen` sind zusätzlich per Spalten-Grant für
 Clients gesperrt (siehe Delta `2026-08-07c` in `schema.sql`) — die
@@ -124,11 +133,27 @@ Edge Function (Service Role) liest sie.
 `probe`, `probe_answer`, `gate`, `chat`, `report`, `report_poll`, `mirror`,
 `mirror_poll`, `doc_chat`, `doc_chat_share`, `meilensteine`, `notify`,
 `daily_digest`, `lock_status`, `lock_set`, `lock_remove`, `lock_verify`,
-`lock_reset_request`, `lock_reset_confirm`, `about_you_get`, `enc_status`,
-`delete_account`, `admin_stats`
+`lock_reset_request`, `lock_reset_confirm`, `about_you_get`, `diary_list`,
+`conflicts_list`, `chat_list`, `chat_send`, `reports_list`, `mirrors_list`,
+`doc_chat_list`, `enc_status`, `delete_account`, `admin_stats`
 
-`about_you_get` liefert Fragebogen, Profil und Chronik entschlüsselt (der
-frühere Direktzugriff in `AboutYou.jsx` zeigte nach Welle 1 Ciphertext).
+Die `*_list`-Aktionen und `chat_send` sind mit der Verschlüsselung
+entstanden: sie ersetzen die früheren Direktzugriffe des Frontends und
+liefern entschlüsselten Klartext. Wichtig dabei — sie laufen über den
+Service-Role-Client und umgehen damit RLS, die Berechtigungsprüfung steht
+also **im Code**: `mirrors_list` und `doc_chat_list` filtern auf
+`user_id` (privat), `reports_list` und `chat_list` auf `couple_id`
+(gemeinsam), `chat_send` prüft zusätzlich `couple_state.gate_open` und
+setzt `sender_id` explizit (der Spalten-Default `auth.uid()` ergibt unter
+Service Role NULL — und NULL heißt in diesem Schema „von Zwischenraum").
+
+`diary` und `conflict` legen den Eintrag jetzt selbst an (nur so kommt er
+verschlüsselt in die Datenbank) und akzeptieren übergangsweise noch die
+alte Form mit `entry_id`/`conflict_id`, damit nach einem Deploy offene
+Browser-Tabs keine Klartext-Zeilen erzeugen. Diese Kompatibilität kann
+nach ein paar Wochen entfallen.
+
+`about_you_get` liefert Fragebogen, Profil und Chronik entschlüsselt.
 `enc_status` ist ein Admin-Diagnosewerkzeug: zählt je Spalte, wie viel noch
 Klartext ist — liefert nur Zahlen, nie Inhalte.
 
@@ -264,20 +289,21 @@ Reihenfolge immer: SQL → Edge Function → Frontend.
 7. **Verschlüsselung der Inhalte in der Datenbank** — in drei Wellen, weil
    ein einziger Deploy sonst Krypto-Risiko und Autorisierungs-Risiko
    vermischt und man bei einem Fehler nicht mehr weiß, welches davon.
-   **Welle 1 ist fertig (07.08.2026):** `ai_profiles.profile`,
-   `chronicle.observation`, `reports.notizen`, `mirrors.notizen` —
-   die vier Spalten mit dem dichtesten Wissen über beide Menschen.
+   **Welle 1 und 2 sind fertig (07.08.2026).** Verschlüsselt sind damit
+   alle Inhaltsspalten außer `assessments`: `ai_profiles.profile`,
+   `chronicle.observation`, `reports.notizen`+`content`,
+   `mirrors.notizen`+`content`, `diary_entries.content`+`ai_feedback`,
+   `diary_replies.content`, `conflicts.title`+`content`+`ai_reflection`,
+   `chat_messages.content`, `probes.q`+`a`, `doc_chats.content`.
    AES-256-GCM, Schlüssel nur als Secret `CONTENT_ENC_KEY`, nie in
    Postgres. Format `zr1:<Fingerprint>:<IV>:<Ciphertext>`; alles ohne
-   `zr1:` gilt als Alt-Klartext und wird durchgereicht, deshalb war der
-   Code-Deploy für sich allein schon unschädlich. Bestandsdaten migriert
-   und gegen das Backup zeichengenau verifiziert (24/24 identisch).
-   ~~Welle 2~~ (noch offen): `diary_entries`, `diary_replies`,
-   `conflicts`, `chat_messages`, `reports.content`, `mirrors.content`,
-   `probes`, `doc_chats` — braucht neun neue Server-Aktionen, weil das
-   Frontend diese Tabellen heute direkt per RLS liest.
+   `zr1:` gilt als Alt-Klartext und wird durchgereicht, deshalb ist ein
+   Code-Deploy für sich allein immer unschädlich. Bestandsdaten migriert
+   und gegen ein vorher gezogenes Backup zeichengenau verifiziert
+   (Welle 1: 24/24, Welle 2: 160/160 identisch, kein Klartext übrig).
    ~~Welle 3~~ (noch offen): `assessments` (`answers`/`followups`), über
-   additive `*_enc`-Spalten statt Typwechsel.
+   additive `*_enc`-Spalten statt Typwechsel — als einzige Tabelle noch
+   Klartext.
    **Ehrliche Grenze, so auch nach außen formulieren:** schützt gegen
    Table Editor, SQL-Zugriff und Datenbank-Lecks — *nicht* gegen den
    Betreiber, weil die KI die Rohtexte zwangsläufig im Klartext

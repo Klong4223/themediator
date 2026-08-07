@@ -264,7 +264,7 @@ async function tokenHash(token: string): Promise<string> {
 // in ihren Log-Ausgaben. Im Funktionsrumpf waere das zur Laufzeit zwar
 // unkritisch, aber Nutzung-vor-Deklaration hat hier schon einmal einen
 // Produktionsfehler verursacht (siehe CLAUDE.md) -- also gar nicht erst.
-const VERSION = "2026-08-07h";
+const VERSION = "2026-08-07k";
 
 // ─── Verschluesselung ruhender Inhalte (CLAUDE.md Backlog Punkt 7) ──
 // AES-256-GCM ueber Deno's natives crypto.subtle -- kein externes Paket,
@@ -519,7 +519,11 @@ Deno.serve(async (req) => {
 
       const ZIELE: Array<[string, string[]]> = [
         ["ai_profiles", ["profile"]], ["chronicle", ["observation"]],
-        ["reports", ["notizen"]], ["mirrors", ["notizen"]],
+        ["reports", ["notizen", "content"]], ["mirrors", ["notizen", "content"]],
+        ["diary_entries", ["content", "ai_feedback"]], ["diary_replies", ["content"]],
+        ["conflicts", ["title", "content", "ai_reflection"]],
+        ["chat_messages", ["content"]], ["probes", ["q", "a"]],
+        ["doc_chats", ["content"]],
       ];
       const bericht: Record<string, unknown> = {};
       for (const [tabelle, spalten] of ZIELE) {
@@ -601,9 +605,35 @@ Deno.serve(async (req) => {
 
     // ─── Tagebuch: Impression + Profil-Update ───────────────
     if (body.action === "diary") {
-      const { data: entry } = await admin.from("diary_entries")
-        .select("id, content").eq("id", body.entry_id).eq("user_id", user.id).single();
-      if (!entry) return json({ error: "Eintrag nicht gefunden." }, 404);
+      // Zwei Aufrufformen, absichtlich:
+      //  - NEU  {content}:  die Aktion legt den Eintrag selbst an (nur so
+      //    kann er verschluesselt in die Datenbank).
+      //  - ALT  {entry_id}: das Frontend hat selbst eingefuegt. Bleibt eine
+      //    Weile erhalten, weil nach einem Deploy offene Browser-Tabs noch
+      //    die alte Fassung ausfuehren -- sonst entstuende dort ein
+      //    Klartext-Eintrag plus Fehlermeldung. Der Eintrag wird dabei
+      //    nachtraeglich verschluesselt.
+      let entry: { id: string; content: string } | null = null;
+      const neuerText = body.content != null ? String(body.content).slice(0, 20000).trim() : null;
+      if (neuerText !== null) {
+        if (!neuerText) return json({ error: "Leerer Eintrag." }, 400);
+        const { data, error } = await admin.from("diary_entries").insert({
+          couple_id: member.couple_id, user_id: user.id,
+          content: await verschluesseln(neuerText),
+        }).select("id").single();
+        if (error || !data) return json({ error: `Eintrag konnte nicht gespeichert werden: ${error?.message ?? "unbekannt"}` }, 500);
+        entry = { id: data.id, content: neuerText };
+      } else {
+        const { data } = await admin.from("diary_entries")
+          .select("id, content").eq("id", body.entry_id).eq("user_id", user.id).single();
+        if (!data) return json({ error: "Eintrag nicht gefunden." }, 404);
+        const klar = await entschluesseln(data.content);
+        entry = { id: data.id, content: klar ?? "" };
+        if (!istVerschluesselt(String(data.content ?? ""))) {
+          await admin.from("diary_entries")
+            .update({ content: await verschluesseln(klar) }).eq("id", data.id);
+        }
+      }
       const { myProfile, partnerProfile, myChronik, partnerChronik } = await kontext();
 
       const feedback = await claude(`${GRUNDREGELN}
@@ -633,9 +663,47 @@ Neuer Tagebucheintrag:
 
 Antworte nur mit der Impression.`, 2500);
 
-      await admin.from("diary_entries").update({ ai_feedback: feedback }).eq("id", entry.id);
+      await admin.from("diary_entries")
+        .update({ ai_feedback: await verschluesseln(feedback) }).eq("id", entry.id);
       await updateProfile(admin, member.couple_id, user.id, myProfile, `Tagebucheintrag: ${entry.content}`);
-      return json({ ok: true, feedback });
+      return json({ ok: true, id: entry.id, feedback });
+    }
+
+    // ─── Tagebuch laden (Eintraege, Dialoge, offene Nachfragen) ─
+    // Ersetzt drei Direktzugriffe in Diary.jsx. Die dortigen Abfragen
+    // hatten KEINEN eigenen user_id-Filter -- das erledigte allein RLS.
+    // Hier laeuft der Service-Role-Client, also muss der Filter explizit
+    // stehen, sonst saehe man fremde Eintraege.
+    if (body.action === "diary_list") {
+      const { data: eintraege } = await admin.from("diary_entries")
+        .select("id, content, ai_feedback, thread_closed, created_at")
+        .eq("user_id", user.id).order("created_at", { ascending: false });
+      const { data: antworten } = await admin.from("diary_replies")
+        .select("id, entry_id, role, content, created_at")
+        .eq("user_id", user.id).order("created_at", { ascending: true });
+      // Filter wie zuvor im Frontend: nur unbeantwortete, nicht
+      // uebersprungene Nachfragen -- sonst tauchen erledigte wieder auf.
+      const { data: nachfragen } = await admin.from("probes")
+        .select("id, q, a, skipped, created_at")
+        .eq("user_id", user.id).is("a", null).eq("skipped", false)
+        .order("created_at", { ascending: true });
+
+      return json({
+        ok: true,
+        entries: await Promise.all((eintraege ?? []).map(async (e) => ({
+          ...e,
+          content: await entschluesselnTolerant(e.content, `diary_entries.content id=${e.id}`),
+          ai_feedback: await entschluesselnTolerant(e.ai_feedback, `diary_entries.ai_feedback id=${e.id}`),
+        }))),
+        replies: await Promise.all((antworten ?? []).map(async (r) => ({
+          ...r,
+          content: await entschluesselnTolerant(r.content, `diary_replies.content id=${r.id}`),
+        }))),
+        probes: await Promise.all((nachfragen ?? []).map(async (p) => ({
+          ...p,
+          q: await entschluesselnTolerant(p.q, `probes.q id=${p.id}`),
+        }))),
+      });
     }
 
     // ─── Tagebuch-Dialog: begrenzte Vertiefung mit Sitzungsende ─
@@ -650,14 +718,19 @@ Antworte nur mit der Impression.`, 2500);
       const text = String(body.content ?? "").slice(0, 4000).trim();
       if (!text) return json({ error: "Leere Antwort." }, 400);
       await admin.from("diary_replies").insert({
-        entry_id: entry.id, couple_id: member.couple_id, user_id: user.id, role: "user", content: text,
+        entry_id: entry.id, couple_id: member.couple_id, user_id: user.id,
+        role: "user", content: await verschluesseln(text),
       });
 
       const { data: thread } = await admin.from("diary_replies")
-        .select("role, content").eq("entry_id", entry.id).order("created_at", { ascending: true });
+        .select("id, role, content").eq("entry_id", entry.id).order("created_at", { ascending: true });
       const userTurns = (thread ?? []).filter((m) => m.role === "user").length;
-      const verlauf = `Eintrag: ${entry.content}\nZwischenraum: ${entry.ai_feedback ?? ""}\n` +
-        (thread ?? []).map((m) => `${m.role === "user" ? (member.display_name ?? "Person") : "Zwischenraum"}: ${m.content}`).join("\n");
+      const eintragKlar = await entschluesselnTolerant(entry.content, `diary_entries.content id=${entry.id}`);
+      const feedbackKlar = await entschluesselnTolerant(entry.ai_feedback, `diary_entries.ai_feedback id=${entry.id}`);
+      const threadZeilen = await Promise.all((thread ?? []).map(async (m) =>
+        `${m.role === "user" ? (member.display_name ?? "Person") : "Zwischenraum"}: ${await entschluesselnTolerant(m.content, `diary_replies.content id=${m.id}`)}`
+      ));
+      const verlauf = `Eintrag: ${eintragKlar}\nZwischenraum: ${feedbackKlar}\n` + threadZeilen.join("\n");
 
       const HARTES_LIMIT = 12;                 // Notbremse, nicht der Regelfall
       const nahAmLimit = userTurns >= HARTES_LIMIT - 2;
@@ -698,7 +771,8 @@ Antworte nur mit deiner Nachricht.`, 2500);
       const abschluss = erzwingeSchluss || willEnde;
 
       await admin.from("diary_replies").insert({
-        entry_id: entry.id, couple_id: member.couple_id, user_id: user.id, role: "ai", content: sichtbar,
+        entry_id: entry.id, couple_id: member.couple_id, user_id: user.id,
+        role: "ai", content: await verschluesseln(sichtbar),
       });
       if (abschluss) {
         await admin.from("diary_entries").update({ thread_closed: true }).eq("id", entry.id);
@@ -710,14 +784,43 @@ Antworte nur mit deiner Nachricht.`, 2500);
 
     // ─── Konflikt: Reflexion, Vermittlung, Beschoenigungs-Check ─
     if (body.action === "conflict") {
-      const { data: k } = await admin.from("conflicts")
-        .select("id, title, content").eq("id", body.conflict_id).eq("user_id", user.id).single();
-      if (!k) return json({ error: "Konflikt nicht gefunden." }, 404);
+      // Gleiche Zwei-Wege-Logik wie bei "diary": {title, content} legt neu
+      // an und verschluesselt, {conflict_id} bedient noch offene alte Tabs.
+      let k: { id: string; title: string | null; content: string } | null = null;
+      const neuerText = body.content != null ? String(body.content).slice(0, 20000).trim() : null;
+      if (neuerText !== null) {
+        if (!neuerText) return json({ error: "Leere Beschreibung." }, 400);
+        const titel = body.title ? String(body.title).slice(0, 300).trim() || null : null;
+        const { data, error } = await admin.from("conflicts").insert({
+          couple_id: member.couple_id, user_id: user.id,
+          title: await verschluesseln(titel),
+          content: await verschluesseln(neuerText),
+        }).select("id").single();
+        if (error || !data) return json({ error: `Konflikt konnte nicht gespeichert werden: ${error?.message ?? "unbekannt"}` }, 500);
+        k = { id: data.id, title: titel, content: neuerText };
+      } else {
+        const { data } = await admin.from("conflicts")
+          .select("id, title, content").eq("id", body.conflict_id).eq("user_id", user.id).single();
+        if (!data) return json({ error: "Konflikt nicht gefunden." }, 404);
+        const titelKlar = await entschluesseln(data.title);
+        const inhaltKlar = await entschluesseln(data.content);
+        k = { id: data.id, title: titelKlar, content: inhaltKlar ?? "" };
+        if (!istVerschluesselt(String(data.content ?? ""))) {
+          await admin.from("conflicts").update({
+            title: await verschluesseln(titelKlar),
+            content: await verschluesseln(inhaltKlar),
+          }).eq("id", data.id);
+        }
+      }
 
-      const { data: pastOwn } = await admin.from("conflicts")
-        .select("title, content").eq("couple_id", member.couple_id)
+      const { data: pastOwnRoh } = await admin.from("conflicts")
+        .select("id, title, content").eq("couple_id", member.couple_id)
         .eq("user_id", user.id).neq("id", k.id)
         .order("created_at", { ascending: false }).limit(80);
+      const pastOwn = await Promise.all((pastOwnRoh ?? []).map(async (c) => ({
+        title: await entschluesselnTolerant(c.title, `conflicts.title id=${c.id}`),
+        content: await entschluesselnTolerant(c.content, `conflicts.content id=${c.id}`),
+      })));
       const { myProfile, partnerProfile, myChronik, partnerChronik } = await kontext();
 
       const reflection = await claude(`${GRUNDREGELN}
@@ -736,16 +839,33 @@ ${myChronik ? `\nChronik:\n${myChronik}` : ""}
 ${partnerProfile || partnerChronik ? `${partnerProfile || "(leer)"}${partnerChronik ? `\n\nChronik:\n${partnerChronik}` : ""}` : "(noch nichts bekannt)"}
 
 Fruehere Konfliktschilderungen dieser Person:
-${(pastOwn ?? []).map((c) => `- ${c.title ?? "ohne Titel"}: ${c.content}`).join("\n\n") || "(keine)"}
+${pastOwn.map((c) => `- ${c.title || "ohne Titel"}: ${c.content}`).join("\n\n") || "(keine)"}
 
 Neuer Konflikt${k.title ? ` ("${k.title}")` : ""}:
 """${k.content}"""
 
 Antworte nur mit den drei Teilen.`, 2500);
 
-      await admin.from("conflicts").update({ ai_reflection: reflection }).eq("id", k.id);
+      await admin.from("conflicts")
+        .update({ ai_reflection: await verschluesseln(reflection) }).eq("id", k.id);
       await updateProfile(admin, member.couple_id, user.id, myProfile, `Konfliktschilderung: ${k.content}`);
-      return json({ ok: true, reflection });
+      return json({ ok: true, id: k.id, reflection });
+    }
+
+    // ─── Themen & Konflikte laden ──────────────────────────────
+    if (body.action === "conflicts_list") {
+      const { data } = await admin.from("conflicts")
+        .select("id, title, content, ai_reflection, created_at")
+        .eq("user_id", user.id).order("created_at", { ascending: false });
+      return json({
+        ok: true,
+        items: await Promise.all((data ?? []).map(async (c) => ({
+          ...c,
+          title: await entschluesselnTolerant(c.title, `conflicts.title id=${c.id}`),
+          content: await entschluesselnTolerant(c.content, `conflicts.content id=${c.id}`),
+          ai_reflection: await entschluesselnTolerant(c.ai_reflection, `conflicts.ai_reflection id=${c.id}`),
+        }))),
+      });
     }
 
     // ─── Fragebogen auswerten + Nachfragen generieren ───────
@@ -812,7 +932,14 @@ Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","...","..."]}`);
         const { data: a } = await admin.from("assessments").select("answers")
           .eq("couple_id", member.couple_id).eq("user_id", uid).maybeSingle();
         const answersLen = a?.answers ? JSON.stringify(a.answers).length / 2 : 0;
-        const chars = [...(d ?? []), ...(k ?? [])].reduce((n, e) => n + (e.content?.length ?? 0), 0) + answersLen;
+        // WICHTIG: Erst entschluesseln, DANN zaehlen. Ciphertext ist
+        // systematisch laenger als sein Klartext -- mit der Rohlaenge
+        // wuerde sich die Schwelle fuers Oeffnen des gemeinsamen Raums
+        // still nach unten verschieben.
+        const laengen = await Promise.all([...(d ?? []), ...(k ?? [])].map(async (e) =>
+          (await entschluesselnTolerant(e.content, "substanz")).length
+        ));
+        const chars = laengen.reduce((n, l) => n + l, 0) + answersLen;
         return { chars: Math.round(chars), entries: (d ?? []).length };
       };
       const mine = await substanz(user.id);
@@ -857,11 +984,51 @@ ${myProfile}
 Verstaendnis Person 2:
 ${partnerProfile}`);
           await admin.from("chat_messages").insert({
-            couple_id: member.couple_id, sender_id: null, content: opening,
+            couple_id: member.couple_id, sender_id: null,
+            content: await verschluesseln(opening),
           });
         }
       }
       return json({ ok: true, gate_open: open, readiness: begruendung });
+    }
+
+    // ─── Gemeinsamer Chat: lesen ───────────────────────────────
+    if (body.action === "chat_list") {
+      const { data } = await admin.from("chat_messages")
+        .select("id, sender_id, content, created_at, origin")
+        .eq("couple_id", member.couple_id)
+        .order("created_at", { ascending: true }).limit(200);
+      return json({
+        ok: true,
+        messages: await Promise.all((data ?? []).map(async (m) => ({
+          ...m,
+          content: await entschluesselnTolerant(m.content, `chat_messages.content id=${m.id}`),
+        }))),
+      });
+    }
+
+    // ─── Gemeinsamer Chat: senden ──────────────────────────────
+    if (body.action === "chat_send") {
+      const text = String(body.content ?? "").slice(0, 4000).trim();
+      if (!text) return json({ error: "Leere Nachricht." }, 400);
+      // Diese Pruefung stand bisher NUR in der RLS-Policy. Der
+      // Service-Role-Client umgeht RLS, also muss sie hier stehen --
+      // sonst koennte man in einen noch geschlossenen Raum schreiben.
+      const { data: st } = await admin.from("couple_state")
+        .select("gate_open").eq("couple_id", member.couple_id).maybeSingle();
+      if (!st?.gate_open) {
+        return json({ error: "Euer gemeinsamer Raum ist noch nicht geöffnet." }, 403);
+      }
+      // sender_id MUSS explizit gesetzt werden: die Spalte hat
+      // `default auth.uid()`, was unter Service Role NULL ergibt -- und
+      // NULL bedeutet in diesem Schema "von Zwischenraum". Ohne diese
+      // Zeile erschiene die Nachricht der Person als KI-Beitrag.
+      const { error } = await admin.from("chat_messages").insert({
+        couple_id: member.couple_id, sender_id: user.id,
+        content: await verschluesseln(text),
+      });
+      if (error) return json({ error: `Senden fehlgeschlagen: ${error.message}` }, 500);
+      return json({ ok: true });
     }
 
     // ─── Der naechste Schritt: Meilensteine + Begruendung im Klartext ─
@@ -1020,7 +1187,9 @@ Antworte nur mit dem Bericht (drei Teile mit Ueberschriften).`;
       }
 
       // stage === "bericht": fertig
-      await admin.from("reports").update({ content: ergebnis.text, status: "done" }).eq("id", zeile.id);
+      await admin.from("reports").update({
+        content: await verschluesseln(ergebnis.text), status: "done",
+      }).eq("id", zeile.id);
       if (zeile.requested_by) {
         const { data: beide } = await admin.from("couple_members")
           .select("user_id").eq("couple_id", zeile.couple_id);
@@ -1120,8 +1289,62 @@ Antworte nur mit dem Spiegel-Text.`;
       }
 
       // stage === "spiegel": fertig
-      await admin.from("mirrors").update({ content: ergebnis.text, status: "done" }).eq("id", zeile.id);
+      await admin.from("mirrors").update({
+        content: await verschluesseln(ergebnis.text), status: "done",
+      }).eq("id", zeile.id);
       return json({ ok: true, status: "done" });
+    }
+
+    // ─── Beziehungsbilder laden ────────────────────────────────
+    // Couple-weit: der Bericht gehoert beiden (wie die alte Policy
+    // "reports: Mitglieder lesen"). notizen bleibt bewusst draussen.
+    if (body.action === "reports_list") {
+      const { data } = await admin.from("reports")
+        .select("id, content, status, stage, error_msg, created_at")
+        .eq("couple_id", member.couple_id).order("created_at", { ascending: false });
+      return json({
+        ok: true,
+        items: await Promise.all((data ?? []).map(async (r) => ({
+          ...r,
+          content: await entschluesselnTolerant(r.content, `reports.content id=${r.id}`),
+        }))),
+      });
+    }
+
+    // ─── Spiegel laden ─────────────────────────────────────────
+    // ANDERS als reports: nur die eigenen Zeilen. Der Spiegel ist
+    // privat, couple-weit waere hier ein Vertraulichkeitsbruch.
+    if (body.action === "mirrors_list") {
+      const { data } = await admin.from("mirrors")
+        .select("id, content, status, stage, error_msg, created_at")
+        .eq("user_id", user.id).order("created_at", { ascending: false });
+      return json({
+        ok: true,
+        items: await Promise.all((data ?? []).map(async (m) => ({
+          ...m,
+          content: await entschluesselnTolerant(m.content, `mirrors.content id=${m.id}`),
+        }))),
+      });
+    }
+
+    // ─── Verankertes Gespraech laden ───────────────────────────
+    // Beide Filter noetig: bei kind="report" teilen sich BEIDE Partner
+    // dieselbe doc_id. Die alte Abfrage im Frontend filterte nur nach
+    // doc_id und verliess sich fuer die Personentrennung ganz auf RLS.
+    if (body.action === "doc_chat_list") {
+      const docId = String(body.doc_id ?? "");
+      if (!docId) return json({ error: "Kein Dokument angegeben." }, 400);
+      const { data } = await admin.from("doc_chats")
+        .select("id, sender, content, created_at")
+        .eq("doc_id", docId).eq("user_id", user.id)
+        .order("created_at", { ascending: true });
+      return json({
+        ok: true,
+        messages: await Promise.all((data ?? []).map(async (m) => ({
+          ...m,
+          content: await entschluesselnTolerant(m.content, `doc_chats.content id=${m.id}`),
+        }))),
+      });
     }
 
     // ─── Verankertes Gespraech zu Beziehungsbild oder Spiegel ─
@@ -1144,7 +1367,7 @@ Antworte nur mit dem Spiegel-Text.`;
       // Nur das juengste Dokument seiner Art nimmt neue Nachrichten an
       // (Definition of Done: aeltere Gespraeche bleiben lesbar, aber
       // schreibgeschuetzt). Betrifft nur das SCHREIBEN einer neuen
-      // Nachricht -- Lesen laeuft direkt ueber die RLS-Policy am Client.
+      // Nachricht -- gelesen wird ueber die Aktion doc_chat_list.
       const neuesteId = kind === "report"
         ? (await admin.from("reports").select("id").eq("couple_id", member.couple_id)
             .order("created_at", { ascending: false }).limit(1).maybeSingle()).data?.id
@@ -1159,12 +1382,13 @@ Antworte nur mit dem Spiegel-Text.`;
         // WICHTIG: Erst speichern, DANN das Modell befragen. Scheitert der
         // Modellaufruf, ist die Eingabe der Person trotzdem nie verloren.
         await admin.from("doc_chats").insert({
-          couple_id: member.couple_id, user_id: user.id, kind, doc_id: docId, sender: "user", content: rohtext,
+          couple_id: member.couple_id, user_id: user.id, kind, doc_id: docId,
+          sender: "user", content: await verschluesseln(rohtext),
         });
       }
 
       const { data: verlaufRaw } = await admin.from("doc_chats")
-        .select("sender, content").eq("doc_id", docId).eq("user_id", user.id)
+        .select("id, sender, content").eq("doc_id", docId).eq("user_id", user.id)
         .order("created_at", { ascending: true });
       const verlauf = verlaufRaw ?? [];
       const letzte = verlauf[verlauf.length - 1];
@@ -1174,7 +1398,15 @@ Antworte nur mit dem Spiegel-Text.`;
 
       const nameMe = member.display_name ?? "du";
       const matMe = await materialFuer(admin, member.couple_id, user.id);
-      const dialogText = verlauf.map((m) => `${m.sender === "user" ? nameMe : "Zwischenraum"}: ${m.content}`).join("\n");
+      // BEWUSST hier, VOR dem try-Block um den Modellaufruf: der faengt
+      // absichtlich nur Modell-Fehler ab (damit eine bereits gespeicherte
+      // Nachricht nicht verloren wirkt). Ein Entschluesselungsfehler darf
+      // dort nicht als "Antwort konnte nicht erzeugt werden" verschwinden.
+      const dokText = await entschluesselnTolerant(zeile.content, `${kind}.content id=${docId}`);
+      const dialogZeilen = await Promise.all(verlauf.map(async (m) =>
+        `${m.sender === "user" ? nameMe : "Zwischenraum"}: ${await entschluesselnTolerant(m.content, `doc_chats.content id=${m.id}`)}`
+      ));
+      const dialogText = dialogZeilen.join("\n");
       const dokTyp = kind === "report" ? "das gemeinsame Beziehungsbild" : "deinen persoenlichen Spiegel";
 
       const prompt = `${GRUNDREGELN}
@@ -1184,7 +1416,7 @@ GESPRAECHSREGEL: Du sprichst mit EINER Person ueber einen Text, den sie gerade g
 AUFGABE: ${nameMe} spricht mit dir ueber ${dokTyp}. Antworte auf die letzte Nachricht im Gespraech -- warm, konkret, ohne Therapeuten-Jargon. Frag nur nach, wenn es das Gespraech wirklich weiterbringt.
 
 DER TEXT, UEBER DEN IHR SPRECHT:
-${zeile.content}
+${dokText}
 
 EIGENES MATERIAL VON ${nameMe} (zum Nachschlagen):
 ${matMe}
@@ -1197,7 +1429,8 @@ Antworte nur mit deiner Nachricht.`;
       try {
         const antwort = await claude(prompt, 1200);
         await admin.from("doc_chats").insert({
-          couple_id: member.couple_id, user_id: user.id, kind, doc_id: docId, sender: "ai", content: antwort,
+          couple_id: member.couple_id, user_id: user.id, kind, doc_id: docId,
+          sender: "ai", content: await verschluesseln(antwort),
         });
         return json({ ok: true, antwort });
       } catch (e) {
@@ -1216,12 +1449,14 @@ Antworte nur mit deiner Nachricht.`;
       const modus = body.modus === "thema" ? "thema" : "eroeffnung";
 
       const { data: verlauf } = await admin.from("doc_chats")
-        .select("sender, content").eq("doc_id", docId).eq("user_id", user.id)
+        .select("id, sender, content").eq("doc_id", docId).eq("user_id", user.id)
         .order("created_at", { ascending: true });
       if (!verlauf?.length) return json({ error: "Noch kein Gespräch zum Teilen." }, 400);
 
       const nameMe = member.display_name ?? "du";
-      const dialogText = verlauf.map((m) => `${m.sender === "user" ? nameMe : "Zwischenraum"}: ${m.content}`).join("\n");
+      const dialogText = (await Promise.all(verlauf.map(async (m) =>
+        `${m.sender === "user" ? nameMe : "Zwischenraum"}: ${await entschluesselnTolerant(m.content, `doc_chats.content id=${m.id}`)}`
+      ))).join("\n");
 
       const prompt = `${GRUNDREGELN}
 
@@ -1236,7 +1471,8 @@ Antworte nur mit ${modus === "thema" ? "der Ueberschrift" : "der Eroeffnung"}, o
 
       const eroeffnung = await claude(prompt, 500);
       await admin.from("chat_messages").insert({
-        couple_id: member.couple_id, sender_id: null, content: eroeffnung, origin: `doc_chat:${kind}`,
+        couple_id: member.couple_id, sender_id: null,
+        content: await verschluesseln(eroeffnung), origin: `doc_chat:${kind}`,
       });
       await benachrichtigeBeiFreigabe(admin, member.couple_id, partner.user_id, "chat");
       return json({ ok: true, eroeffnung });
@@ -1244,12 +1480,16 @@ Antworte nur mit ${modus === "thema" ? "der Ueberschrift" : "der Eroeffnung"}, o
 
     // ─── Zwischenraum fragt: gezielte Fragen fuer ein ganzheitliches Bild ─
     if (body.action === "probe") {
-      const { data: recent } = await admin.from("diary_entries").select("content")
+      const { data: recentRoh } = await admin.from("diary_entries").select("id, content")
         .eq("couple_id", member.couple_id).eq("user_id", user.id)
         .order("created_at", { ascending: false }).limit(20);
-      const { data: past } = await admin.from("probes").select("q")
+      const { data: pastRoh } = await admin.from("probes").select("id, q")
         .eq("couple_id", member.couple_id).eq("user_id", user.id)
         .order("created_at", { ascending: false }).limit(10);
+      const recent = await Promise.all((recentRoh ?? []).map(async (e) =>
+        await entschluesselnTolerant(e.content, `diary_entries.content id=${e.id}`)));
+      const past = await Promise.all((pastRoh ?? []).map(async (p) =>
+        await entschluesselnTolerant(p.q, `probes.q id=${p.id}`)));
       const { myProfile, partnerProfile, myChronik, partnerChronik } = await kontext();
 
       const raw = await claude(`${GRUNDREGELN}
@@ -1259,7 +1499,7 @@ AUFGABE: Stelle ${member.display_name ?? "der Person"} bis zu 3 gezielte, offene
 GESPERRT bleibt: Alles, was nicht offen Geteiltes der anderen Person transportieren wuerde — deren innere Zustaende, Gefuehle, Zweifel, Plaene, Geheimnisse oder konkrete private Schilderungen. Deine Frage lenkt Aufmerksamkeit auf einen Lebensbereich, nie auf den Inhalt der anderen Seite. Keine Attribution ("dein Partner..."). Erlebensbezogen und wertfrei formulieren ("Wie erlebst du...", "Was braeuchtest du...").
 
 Bereits gestellte Fragen (nicht wiederholen):
-${(past ?? []).map((x) => `- ${x.q}`).join("\n") || "(keine)"}
+${past.map((q) => `- ${q}`).join("\n") || "(keine)"}
 
 Verdichtetes Verstaendnis dieser Person:
 ${myProfile || "(noch leer)"}
@@ -1267,7 +1507,7 @@ ${myChronik ? `\nChronik dieser Person:\n${myChronik}` : ""}
 ${partnerChronik ? `\nChronik der anderen Person (streng vertraulich, Sperrregel beachten):\n${partnerChronik}` : ""}
 
 Juengste Tagebucheintraege dieser Person:
-${(recent ?? []).map((e) => e.content).join("\n---\n") || "(keine)"}
+${recent.join("\n---\n") || "(keine)"}
 ${partnerProfile ? `\nVerdichtetes Verstaendnis der anderen Person (streng vertraulich, Sperrregel beachten):\n${partnerProfile}` : ""}
 
 Stelle lieber eine gute Frage als drei mittelmaessige. Wenn dir gerade nichts wirklich Weiterfuehrendes einfaellt, gib eine leere Liste zurueck — das ist besser als eine Pflichtfrage.
@@ -1277,9 +1517,9 @@ Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","..."]}`, 900);
       let fragen: string[] = [];
       try { fragen = JSON.parse(raw.replace(/```json|```/g, "").trim()).fragen.slice(0, 3); } catch { fragen = []; }
       if (fragen.length) {
-        await admin.from("probes").insert(fragen.map((q) => ({
-          couple_id: member.couple_id, user_id: user.id, q,
-        })));
+        await admin.from("probes").insert(await Promise.all(fragen.map(async (q) => ({
+          couple_id: member.couple_id, user_id: user.id, q: await verschluesseln(q),
+        }))));
       }
       return json({ ok: true, count: fragen.length });
     }
@@ -1293,10 +1533,12 @@ Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","..."]}`, 900);
         return json({ ok: true });
       }
       const answer = String(body.answer ?? "").slice(0, 4000);
-      await admin.from("probes").update({ a: answer }).eq("id", pr.id);
+      await admin.from("probes")
+        .update({ a: await verschluesseln(answer) }).eq("id", pr.id);
+      const frageKlar = await entschluesselnTolerant(pr.q, `probes.q id=${pr.id}`);
       const { myProfile } = await kontext();
       await updateProfile(admin, member.couple_id, user.id, myProfile,
-        `Gezielte Frage: "${pr.q}" — Antwort der Person: "${answer}"`);
+        `Gezielte Frage: "${frageKlar}" — Antwort der Person: "${answer}"`);
       return json({ ok: true });
     }
 
@@ -1484,12 +1726,14 @@ Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","..."]}`, 900);
     // ─── Chat-Moderation ────────────────────────────────────
     if (body.action === "chat") {
       const { data: msgs } = await admin.from("chat_messages")
-        .select("sender_id, content").eq("couple_id", member.couple_id)
+        .select("id, sender_id, content").eq("couple_id", member.couple_id)
         .order("created_at", { ascending: false }).limit(80);
-      const transcript = (msgs ?? []).reverse().map((m) =>
-        m.sender_id === null ? `Zwischenraum: ${m.content}` :
-        m.sender_id === user.id ? `${member.display_name ?? "Person 1"}: ${m.content}` :
-        `${partner?.display_name ?? "Person 2"}: ${m.content}`).join("\n");
+      const transcript = (await Promise.all((msgs ?? []).reverse().map(async (m) => {
+        const text = await entschluesselnTolerant(m.content, `chat_messages.content id=${m.id}`);
+        return m.sender_id === null ? `Zwischenraum: ${text}` :
+          m.sender_id === user.id ? `${member.display_name ?? "Person 1"}: ${text}` :
+          `${partner?.display_name ?? "Person 2"}: ${text}`;
+      }))).join("\n");
       const { myProfile, partnerProfile } = await kontext();
 
       const mod = await claude(`${GRUNDREGELN}
@@ -1508,7 +1752,8 @@ ${transcript || "(noch leer)"}
 Antworte nur mit deiner Moderationsnachricht.`, 2000);
 
       await admin.from("chat_messages").insert({
-        couple_id: member.couple_id, sender_id: null, content: mod,
+        couple_id: member.couple_id, sender_id: null,
+        content: await verschluesseln(mod),
       });
       return json({ ok: true });
     }
@@ -1539,9 +1784,17 @@ async function materialFuer(
         .map((x) => `${x.frage} -> ${x.antwort}`).join("\n")
     : "(kein Fragebogen)";
   const chronik = await getChronik(admin, uid);
-  return `FRAGEBOGEN:\n${answers}\n\n${chronik ? `CHRONIK:\n${chronik}\n\n` : ""}TAGEBUCH (neueste zuerst):\n${(d ?? [])
-    .map((e) => `[${e.created_at.slice(0, 10)}] ${e.content}`).join("\n---\n") || "(leer)"}\n\nTHEMEN UND KONFLIKTE:\n${(k ?? [])
-    .map((e) => `[${e.created_at.slice(0, 10)}]${e.title ? ` ${e.title}:` : ""} ${e.content}`).join("\n---\n") || "(leer)"}`;
+  // Tolerant entschluesseln: hier stehen bis zu 120 Zeilen nebeneinander,
+  // eine einzelne unlesbare darf die ganze Analyse nicht verhindern.
+  const tagebuch = (await Promise.all((d ?? []).map(async (e) =>
+    `[${e.created_at.slice(0, 10)}] ${await entschluesselnTolerant(e.content, "diary_entries.content")}`
+  ))).join("\n---\n") || "(leer)";
+  const konflikte = (await Promise.all((k ?? []).map(async (e) => {
+    const titel = await entschluesselnTolerant(e.title, "conflicts.title");
+    const inhalt = await entschluesselnTolerant(e.content, "conflicts.content");
+    return `[${e.created_at.slice(0, 10)}]${titel ? ` ${titel}:` : ""} ${inhalt}`;
+  }))).join("\n---\n") || "(leer)";
+  return `FRAGEBOGEN:\n${answers}\n\n${chronik ? `CHRONIK:\n${chronik}\n\n` : ""}TAGEBUCH (neueste zuerst):\n${tagebuch}\n\nTHEMEN UND KONFLIKTE:\n${konflikte}`;
 }
 
 async function getChronik(
@@ -1568,10 +1821,20 @@ async function eigenesMaterial(
     .eq("couple_id", coupleId).eq("user_id", userId)
     .order("created_at", { ascending: false }).limit(20);
   const teile: string[] = [];
-  if ((d ?? []).length) teile.push("FRUEHERE TAGEBUCHEINTRAEGE (neueste zuerst):\n" +
-    (d ?? []).map((e) => `[${e.created_at.slice(0, 10)}] ${e.content}`).join("\n---\n"));
-  if ((k ?? []).length) teile.push("FRUEHERE THEMEN UND KONFLIKTE:\n" +
-    (k ?? []).map((e) => `[${e.created_at.slice(0, 10)}]${e.title ? ` ${e.title}:` : ""} ${e.content}`).join("\n---\n"));
+  if ((d ?? []).length) {
+    const zeilen = await Promise.all((d ?? []).map(async (e) =>
+      `[${e.created_at.slice(0, 10)}] ${await entschluesselnTolerant(e.content, "diary_entries.content")}`
+    ));
+    teile.push("FRUEHERE TAGEBUCHEINTRAEGE (neueste zuerst):\n" + zeilen.join("\n---\n"));
+  }
+  if ((k ?? []).length) {
+    const zeilen = await Promise.all((k ?? []).map(async (e) => {
+      const titel = await entschluesselnTolerant(e.title, "conflicts.title");
+      const inhalt = await entschluesselnTolerant(e.content, "conflicts.content");
+      return `[${e.created_at.slice(0, 10)}]${titel ? ` ${titel}:` : ""} ${inhalt}`;
+    }));
+    teile.push("FRUEHERE THEMEN UND KONFLIKTE:\n" + zeilen.join("\n---\n"));
+  }
   return teile.join("\n\n") || "(noch keine frueheren Eintraege)";
 }
 

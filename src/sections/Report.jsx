@@ -74,9 +74,14 @@ export default function Report({ membership, onGespraech }) {
       if (m.user_id === membership.user_id) setMyConsent(!!m.report_consent);
       else { setPartnerJoined(true); setPartnerConsent(!!m.report_consent); }
     }
-    const { data: r } = await supabase.from("reports")
-      .select("id, content, status, stage, error_msg, created_at").order("created_at", { ascending: false });
-    setReports(r || []);
+    // Ueber die Edge Function: der Berichtstext liegt verschluesselt in
+    // der Datenbank (CLAUDE.md Backlog 7).
+    try {
+      const res = await callAI({ action: "reports_list" });
+      setReports(res.items || []);
+    } catch (e) {
+      setError("Beziehungsbilder konnten nicht geladen werden: " + (e?.message || e));
+    }
   }
   useEffect(() => { load(); }, []);
 

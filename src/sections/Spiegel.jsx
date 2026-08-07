@@ -58,9 +58,14 @@ export default function Spiegel({ membership }) {
       if (m.user_id === membership.user_id) setMyConsent(!!m.report_consent);
       else { setPartnerJoined(true); setPartnerConsent(!!m.report_consent); }
     }
-    const { data: m } = await supabase.from("mirrors")
-      .select("id, content, status, stage, error_msg, created_at").order("created_at", { ascending: false });
-    setMirrors(m || []);
+    // Ueber die Edge Function: der Spiegeltext liegt verschluesselt in
+    // der Datenbank (CLAUDE.md Backlog 7).
+    try {
+      const res = await callAI({ action: "mirrors_list" });
+      setMirrors(res.items || []);
+    } catch (e) {
+      setError("Spiegel konnten nicht geladen werden: " + (e?.message || e));
+    }
   }
   useEffect(() => { load(); }, []);
 

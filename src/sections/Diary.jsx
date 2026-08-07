@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { supabase, callAI } from "../supabase.js";
+import { callAI } from "../supabase.js";
 import { C, st, Btn, AIBlock, ErrorNote } from "../ui.jsx";
 
 export default function Diary({ membership }) {
@@ -17,23 +17,20 @@ export default function Diary({ membership }) {
   // erscheint (der neue Eintrag selbst), nicht ans Eingabefeld daneben.
   const [wartend, setWartend] = useState(null);
 
+  // Ein Aufruf statt drei Direktzugriffen: Tagebuch, Konflikte und
+  // Nachfragen liegen verschluesselt in der Datenbank (CLAUDE.md
+  // Backlog 7), nur die Edge Function hat den Schluessel.
   async function load() {
-    const { data } = await supabase
-      .from("diary_entries")
-      .select("id, content, ai_feedback, thread_closed, created_at")
-      .order("created_at", { ascending: false });
-    setEntries(data || []);
-    const { data: rp } = await supabase.from("diary_replies")
-      .select("entry_id, role, content, created_at")
-      .order("created_at", { ascending: true });
-    const grouped = {};
-    for (const r of rp || []) (grouped[r.entry_id] = grouped[r.entry_id] || []).push(r);
-    setReplies(grouped);
-    const { data: pr } = await supabase.from("probes")
-      .select("id, q, a, skipped, created_at")
-      .is("a", null).eq("skipped", false)
-      .order("created_at", { ascending: true });
-    setProbes(pr || []);
+    try {
+      const res = await callAI({ action: "diary_list" });
+      setEntries(res.entries || []);
+      const grouped = {};
+      for (const r of res.replies || []) (grouped[r.entry_id] = grouped[r.entry_id] || []).push(r);
+      setReplies(grouped);
+      setProbes(res.probes || []);
+    } catch (e) {
+      setError("Deine Einträge konnten nicht geladen werden: " + (e?.message || e));
+    }
   }
 
   async function fetchProbes() {
@@ -68,34 +65,40 @@ export default function Diary({ membership }) {
   }
   useEffect(() => { load(); }, []);
 
+  // Speichern und Auswerten laufen jetzt in EINEM Aufruf: nur die Edge
+  // Function kann den Text verschluesselt ablegen, ein Direkt-Insert vom
+  // Browser aus wuerde Klartext in die Datenbank schreiben.
+  //
+  // Der Entwurf wird erst geleert, wenn der Server bestaetigt hat -- bei
+  // einem Netzfehler bleibt das Getippte stehen.
   async function save() {
     if (!draft.trim()) return;
     setBusy(true); setError(null);
-    let entryId = null;
+    const text = draft.trim();
+    // Der Eintrag erscheint sofort oben in der Liste, mit dem Ladehinweis
+    // direkt daran (Backlog Punkt 3). Weil Speichern und Auswerten jetzt
+    // ein einziger Aufruf sind, gibt es dafuer noch keine echte ID --
+    // deshalb eine vorlaeufige Zeile, die der spaetere load() ersetzt.
+    const vorlaeufigeId = "neu";
+    setEntries((prev) => [
+      { id: vorlaeufigeId, content: text, ai_feedback: null, thread_closed: false,
+        created_at: new Date().toISOString() },
+      ...prev,
+    ]);
+    setWartend(vorlaeufigeId);
+    setDraft("");
     try {
-      const { data, error } = await supabase
-        .from("diary_entries")
-        .insert({ couple_id: membership.couple_id, content: draft.trim() })
-        .select("id").single();
-      if (error) throw error;
-      entryId = data.id;
-      setDraft("");
-      setWartend(entryId);
-      // Sofort neu laden, damit der Eintrag oben in der Liste erscheint --
-      // der Ladehinweis steht dann direkt daran, nicht mehr am Eingabefeld.
+      await callAI({ action: "diary", content: text });
+      setWartend(null);
       await load();
     } catch (e) {
-      setError("Eintrag konnte nicht gespeichert werden: " + (e?.message || e));
-      setBusy(false);
-      return;
+      // Die vorlaeufige Zeile wieder entfernen und den Text ins Feld
+      // zuruecklegen -- sonst waere das Getippte weg.
+      setEntries((prev) => prev.filter((e2) => e2.id !== vorlaeufigeId));
+      setWartend(null);
+      setDraft(text);
+      setError("Eintrag konnte nicht gespeichert werden: " + (e?.message || JSON.stringify(e)));
     }
-    try {
-      await callAI({ action: "diary", entry_id: entryId });
-    } catch (e) {
-      setError("Dein Eintrag ist gespeichert, aber die KI-Rückmeldung schlug fehl: " + (e?.message || JSON.stringify(e)));
-    }
-    setWartend(null);
-    await load();
     setBusy(false);
   }
 

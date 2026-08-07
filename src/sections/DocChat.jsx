@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { supabase, callAI } from "../supabase.js";
+import { callAI } from "../supabase.js";
 import { C, st, Btn, ErrorNote } from "../ui.jsx";
 
 // Verankerter Gespraechsfaden zu einem Beziehungsbild oder Spiegel
@@ -20,11 +20,16 @@ export default function DocChat({ kind, docId, canWrite }) {
   const [teilenBusy, setTeilenBusy] = useState(false);
   const [geteilt, setGeteilt] = useState(false);
 
+  // Ueber die Edge Function: die Gespraechsbeitraege liegen verschluesselt
+  // in der Datenbank (CLAUDE.md Backlog 7).
   async function load() {
-    const { data } = await supabase.from("doc_chats")
-      .select("id, sender, content, created_at")
-      .eq("doc_id", docId).order("created_at", { ascending: true });
-    setMessages(data || []);
+    try {
+      const res = await callAI({ action: "doc_chat_list", doc_id: docId });
+      setMessages(res.messages || []);
+    } catch (e) {
+      setMessages([]);
+      setError("Das Gespräch konnte nicht geladen werden: " + (e?.message || e));
+    }
   }
   useEffect(() => { load(); }, [docId]);
 

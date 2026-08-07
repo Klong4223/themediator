@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { supabase, callAI } from "../supabase.js";
+import { callAI } from "../supabase.js";
 import { C, st, Btn, AIBlock, ErrorNote } from "../ui.jsx";
 
 export default function Conflicts({ membership }) {
@@ -12,41 +12,44 @@ export default function Conflicts({ membership }) {
   // nur an den Knopf oben (gleiches Muster wie im Tagebuch, Punkt 3).
   const [wartend, setWartend] = useState(null);
 
+  // Ueber die Edge Function statt direkt: die Inhalte liegen
+  // verschluesselt in der Datenbank (CLAUDE.md Backlog 7).
   async function load() {
-    const { data } = await supabase
-      .from("conflicts")
-      .select("id, title, content, ai_reflection, created_at")
-      .order("created_at", { ascending: false });
-    setItems(data || []);
+    try {
+      const res = await callAI({ action: "conflicts_list" });
+      setItems(res.items || []);
+    } catch (e) {
+      setError("Deine Themen konnten nicht geladen werden: " + (e?.message || e));
+    }
   }
   useEffect(() => { load(); }, []);
 
+  // Speichern und Reflexion in einem Aufruf -- nur der Server kann den
+  // Text verschluesselt ablegen. Die vorlaeufige Zeile haelt das Verhalten
+  // von vorher: Eintrag sofort sichtbar, Ladehinweis direkt daran.
   async function save() {
     if (!draft.trim()) return;
     setBusy(true); setError(null);
-    let conflictId = null;
+    const text = draft.trim();
+    const titel = title.trim() || null;
+    const vorlaeufigeId = "neu";
+    setItems((prev) => [
+      { id: vorlaeufigeId, title: titel, content: text, ai_reflection: null,
+        created_at: new Date().toISOString() },
+      ...prev,
+    ]);
+    setWartend(vorlaeufigeId);
+    setTitle(""); setDraft("");
     try {
-      const { data, error } = await supabase
-        .from("conflicts")
-        .insert({ couple_id: membership.couple_id, title: title.trim() || null, content: draft.trim() })
-        .select("id").single();
-      if (error) throw error;
-      conflictId = data.id;
-      setTitle(""); setDraft("");
-      setWartend(conflictId);
-      await load(); // erscheint sofort oben, Ladehinweis steht direkt daran
+      await callAI({ action: "conflict", title: titel, content: text });
+      setWartend(null);
+      await load();
     } catch (e) {
-      setError("Fehler: " + (e?.message || JSON.stringify(e)));
-      setBusy(false);
-      return;
+      setItems((prev) => prev.filter((k) => k.id !== vorlaeufigeId));
+      setWartend(null);
+      setTitle(titel || ""); setDraft(text);
+      setError("Eintrag konnte nicht gespeichert werden: " + (e?.message || JSON.stringify(e)));
     }
-    try {
-      await callAI({ action: "conflict", conflict_id: conflictId });
-    } catch (e) {
-      setError("Dein Eintrag ist gespeichert, aber die Reflexion schlug fehl: " + (e?.message || JSON.stringify(e)));
-    }
-    setWartend(null);
-    await load();
     setBusy(false);
   }
 

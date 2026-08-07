@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { supabase, callAI } from "../supabase.js";
+import { callAI } from "../supabase.js";
 import { C, st, Btn, Tag, Convergence, ErrorNote, InviteBox } from "../ui.jsx";
 
 export default function SharedChat({ membership, state, refreshState }) {
@@ -75,13 +75,15 @@ function Chat({ membership }) {
   const [error, setError] = useState(null);
   const endRef = useRef(null);
 
+  // Ueber die Edge Function: die Nachrichten liegen verschluesselt in der
+  // Datenbank (CLAUDE.md Backlog 7).
   async function load() {
-    const { data } = await supabase
-      .from("chat_messages")
-      .select("id, sender_id, content, created_at")
-      .order("created_at", { ascending: true })
-      .limit(200);
-    setMsgs(data || []);
+    try {
+      const res = await callAI({ action: "chat_list" });
+      setMsgs(res.messages || []);
+    } catch (e) {
+      setError("Nachrichten konnten nicht geladen werden: " + (e?.message || e));
+    }
   }
 
   useEffect(() => {
@@ -92,15 +94,20 @@ function Chat({ membership }) {
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs.length]);
 
+  // Der Entwurf wird erst geleert, wenn der Server bestaetigt hat --
+  // sonst waere die Nachricht bei einem Netzfehler verloren.
   async function send() {
     if (!input.trim()) return;
     const text = input.trim();
-    setInput("");
-    const { error } = await supabase
-      .from("chat_messages")
-      .insert({ couple_id: membership.couple_id, content: text });
-    if (error) { setError("Senden fehlgeschlagen."); return; }
-    await load();
+    setError(null);
+    try {
+      await callAI({ action: "chat_send", content: text });
+      setInput("");
+      await load();
+    } catch (e) {
+      setError("Senden fehlgeschlagen: " + (e?.message || e));
+      return;
+    }
     try { await callAI({ action: "notify", kind: "chat" }); } catch { /* Mail ist optional */ }
   }
 
