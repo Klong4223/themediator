@@ -19,6 +19,10 @@ export default function DocChat({ kind, docId, canWrite }) {
   const [error, setError] = useState(null);
   const [teilenBusy, setTeilenBusy] = useState(false);
   const [geteilt, setGeteilt] = useState(false);
+  // Vorschau vor dem Teilen: { entwurf_id, eroeffnung } oder null.
+  // Solange das gesetzt ist, ist noch NICHTS im gemeinsamen Raum gelandet.
+  const [vorschau, setVorschau] = useState(null);
+  const [modus, setModus] = useState("eroeffnung");
 
   // Ueber die Edge Function: die Gespraechsbeitraege liegen verschluesselt
   // in der Datenbank (CLAUDE.md Backlog 7).
@@ -76,13 +80,31 @@ export default function DocChat({ kind, docId, canWrite }) {
     setBusy(false);
   }
 
-  async function teilen() {
+  // Erzeugt NUR den Vorschlag. Es geht dabei nichts in den gemeinsamen
+  // Raum -- das passiert erst in bestaetigen().
+  async function vorschauErzeugen(gewuenschterModus) {
     setTeilenBusy(true); setError(null);
     try {
-      await callAI({ action: "doc_chat_share", kind, doc_id: docId, modus: "eroeffnung" });
+      const res = await callAI({ action: "doc_chat_share", kind, doc_id: docId, modus: gewuenschterModus });
+      setModus(gewuenschterModus);
+      setVorschau({ entwurf_id: res.entwurf_id, eroeffnung: res.eroeffnung });
+    } catch (e) {
+      setError("Der Vorschlag konnte nicht erzeugt werden: " + (e?.message || JSON.stringify(e)));
+    }
+    setTeilenBusy(false);
+  }
+
+  // Schickt genau den Text ab, der in der Vorschau stand -- der Server
+  // nimmt ihn aus seiner eigenen Ablage, nicht aus dieser Antwort.
+  async function bestaetigen() {
+    if (!vorschau) return;
+    setTeilenBusy(true); setError(null);
+    try {
+      await callAI({ action: "doc_chat_share_confirm", entwurf_id: vorschau.entwurf_id });
+      setVorschau(null);
       setGeteilt(true);
     } catch (e) {
-      setError("Konnte nicht geteilt werden: " + (e?.message || JSON.stringify(e)));
+      setError("Konnte nicht gesendet werden: " + (e?.message || JSON.stringify(e)));
     }
     setTeilenBusy(false);
   }
@@ -148,15 +170,57 @@ export default function DocChat({ kind, docId, canWrite }) {
             <Btn onClick={senden} disabled={busy || !entwurf.trim()}>
               {busy ? "Wird gesendet …" : "Senden"}
             </Btn>
-            {messages.length > 0 && !geteilt && (
-              <Btn variant="ghost" onClick={teilen} disabled={teilenBusy}>
-                {teilenBusy ? "…" : "Das gehört in unseren Raum"}
+            {messages.length > 0 && !geteilt && !vorschau && (
+              <Btn variant="ghost" onClick={() => vorschauErzeugen(modus)} disabled={teilenBusy}>
+                {teilenBusy ? "Vorschlag entsteht …" : "Daraus etwas in euren Raum tragen …"}
               </Btn>
             )}
             {geteilt && (
               <span style={{ fontSize: 13, color: C.ok }}>✓ In euren Raum getragen — moderiert, nicht wörtlich.</span>
             )}
           </div>
+
+          {/* Vorschau. Bis "In euren Raum senden" gedrueckt ist, steht
+              nichts im gemeinsamen Raum -- das muss hier auch dastehen,
+              sonst traegt der Knopf dieselbe Angst wie vorher. */}
+          {vorschau && (
+            <div style={{ ...st.card, background: C.paper, marginTop: 12 }}>
+              <h3 style={{ ...st.h2, fontSize: 16 }}>Das käme im gemeinsamen Raum an</h3>
+              <p style={{ ...st.hint, marginTop: 6 }}>
+                Dein Gespräch bleibt privat — nichts davon wird weitergegeben. Zwischenraum hat
+                daraus einen neuen Text formuliert, ohne Zitate und ohne zu sagen, wer was
+                gefühlt hat. <strong>Noch ist nichts gesendet.</strong>
+              </p>
+
+              <div style={{ display: "flex", gap: 6, margin: "10px 0", flexWrap: "wrap" }}>
+                {[["eroeffnung", "Kurze Eröffnung"], ["thema", "Nur das Thema"]].map(([id, label]) => (
+                  <button key={id} onClick={() => vorschauErzeugen(id)} disabled={teilenBusy}
+                    style={{
+                      background: modus === id ? C.aSoft : "transparent",
+                      color: modus === id ? C.a : C.inkSoft,
+                      border: `1px solid ${modus === id ? C.a : C.line}`,
+                      borderRadius: 999, padding: "5px 13px", fontSize: 13, fontWeight: 600,
+                      cursor: teilenBusy ? "default" : "pointer", fontFamily: "inherit",
+                    }}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              <div style={{ background: "#fff", border: `1px solid ${C.line}`, borderRadius: 10, padding: "12px 14px" }}>
+                <p style={{ ...st.body, margin: 0, whiteSpace: "pre-wrap" }}>{vorschau.eroeffnung}</p>
+              </div>
+
+              <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+                <Btn onClick={bestaetigen} disabled={teilenBusy}>
+                  {teilenBusy ? "…" : "In euren Raum senden"}
+                </Btn>
+                <Btn variant="ghost" onClick={() => setVorschau(null)} disabled={teilenBusy}>
+                  Abbrechen
+                </Btn>
+              </div>
+            </div>
+          )}
         </>
       ) : (
         messages.length > 0 && (

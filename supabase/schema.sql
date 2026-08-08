@@ -738,3 +738,40 @@ select cron.schedule(
 -- sie rechnet mit dem entschluesselten Text, den Postgres nicht
 -- lesen kann.
 alter table reports add column if not exists schmal boolean not null default false;
+
+-- ============================================================
+-- Delta 2026-08-08a: Vorschau vor dem Teilen in den gemeinsamen Raum
+-- ------------------------------------------------------------
+-- Nutzer-Rueckmeldung (Peter, 08.08.2026): "Dieser Button macht mir
+-- Angst. Ohne Erklaerung steht er da und uebertraegt vielleicht meine
+-- persoenlichen Fragen in einen gemeinsamen Raum." Berechtigt -- die
+-- Aktion war ein einziger Klick ohne Rueckfrage direkt unter dem
+-- privatesten Text der Anwendung.
+--
+-- Ab jetzt zweistufig: Zwischenraum formuliert den Text, die Person
+-- liest ihn, und erst danach geht er in den gemeinsamen Raum.
+--
+-- Warum eine eigene Tabelle und nicht "der Client schickt den Text
+-- zurueck": die Eroeffnung wird mit sender_id = NULL eingestellt, und
+-- NULL heisst in diesem Schema "von Zwischenraum". Wuerde der Client den
+-- Text liefern, koennte er Zwischenraum beliebige Worte in den Mund
+-- legen. Deshalb bleibt der erzeugte Text serverseitig liegen und wird
+-- beim Bestaetigen von dort genommen -- was die Person gelesen hat, ist
+-- exakt das, was ankommt.
+create table if not exists share_drafts (
+  id uuid primary key default gen_random_uuid(),
+  couple_id uuid not null references couples(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  kind text not null,
+  doc_id uuid not null,
+  modus text not null,
+  content text not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists share_drafts_user_idx on share_drafts (user_id, doc_id);
+
+-- RLS aktiv mit NULL Policies: wie bei device_locks kommt ausschliesslich
+-- die Edge Function per Service Role heran, kein Client -- auch nicht der
+-- eigene.
+alter table share_drafts enable row level security;

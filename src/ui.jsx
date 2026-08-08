@@ -58,6 +58,65 @@ export function Btn({ children, onClick, disabled, variant = "primary", role, ty
   );
 }
 
+/* Ein Erklaerblock, den man wegklappen kann, ohne ihn zu verlieren.
+ *
+ * Die Ueberschrift bleibt in beiden Zustaenden stehen -- eingeklappt ist
+ * der Block also weiterhin auffindbar, anders als bei einem Einmal-Hinweis,
+ * der nach dem Wegklicken fuer immer verschwindet.
+ *
+ * Der Zustand liegt in localStorage: reine Oberflaechen-Vorliebe, die nichts
+ * in der Datenbank zu suchen hat. Der Schluessel wird an die Nutzer-ID
+ * gebunden uebergeben, damit zwei Konten auf einem Geraet sich nicht
+ * gegenseitig die Erklaerungen wegklicken.
+ *
+ * `standardOffen` greift nur, solange die Person selbst noch nichts
+ * entschieden hat -- er darf eine gespeicherte Entscheidung nie ueberstimmen.
+ * Weil der Aufrufer den Standard oft erst nach einem Ladevorgang kennt
+ * (Report.jsx: "schon freigegeben?"), wird er nachtraeglich uebernommen,
+ * statt nur einmal beim ersten Rendern gelesen zu werden.
+ */
+export function Ausklappbar({ titel, speicherKey, standardOffen = true, children }) {
+  const gespeichert = () => {
+    try { return localStorage.getItem(speicherKey); } catch { return null; }
+  };
+  const [offen, setOffen] = React.useState(() => {
+    const v = gespeichert();
+    return v === "auf" ? true : v === "zu" ? false : standardOffen;
+  });
+  const [beruehrt, setBeruehrt] = React.useState(false);
+
+  React.useEffect(() => {
+    if (beruehrt || gespeichert()) return;
+    setOffen(standardOffen);
+  }, [standardOffen, beruehrt]);
+
+  function umschalten() {
+    const neu = !offen;
+    setOffen(neu);
+    setBeruehrt(true);
+    try { localStorage.setItem(speicherKey, neu ? "auf" : "zu"); } catch { /* privater Modus */ }
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12 }}>
+        <h2 style={st.h2}>{titel}</h2>
+        <button
+          onClick={umschalten}
+          aria-expanded={offen}
+          style={{
+            background: "none", border: "none", padding: 0, cursor: "pointer", flexShrink: 0,
+            fontFamily: "inherit", fontSize: 13, color: C.inkSoft, textDecoration: "underline",
+          }}
+        >
+          {offen ? "Einklappen" : "Mehr dazu"}
+        </button>
+      </div>
+      {offen && children}
+    </div>
+  );
+}
+
 export function Tag({ role, children }) {
   const col = role === "A" ? C.a : C.b;
   const soft = role === "A" ? C.aSoft : C.bSoft;

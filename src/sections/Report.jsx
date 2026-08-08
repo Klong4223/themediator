@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { supabase, callAI } from "../supabase.js";
-import { C, st, Btn, Convergence, ErrorNote } from "../ui.jsx";
+import { C, st, Btn, Convergence, ErrorNote, Ausklappbar } from "../ui.jsx";
 import NaechsterSchritt from "./NaechsterSchritt.jsx";
 
 // Seit der Umstellung auf OpenAIs Responses-API mit background:true gibt es
@@ -131,19 +131,31 @@ export default function Report({ membership, onGespraech }) {
       <NaechsterSchritt membership={membership} refreshKey={meilensteinKey} />
 
       <section style={st.card}>
-        <h2 style={st.h2}>Das Beziehungsbild</h2>
-        <p style={st.hint}>
-          Ein gemeinsamer Bericht in drei Teilen: <em>Das erlebst du · Das erlebt deine Partnerin
-          oder dein Partner · Was zwischen euch passiert.</em> Kein Urteil, kein Recht-haben —
-          sondern die Chance, einander zum ersten Mal von innen zu sehen.
-        </p>
-        <p style={st.hint}>
-          <strong>Wichtig:</strong> Dafür wertet Zwischenraum das Material von euch beiden gemeinsam
-          aus — anders als sonst. Deshalb entsteht der Bericht nur, wenn <strong>beide</strong> aktiv
-          freigeben. Deine Rohtexte bekommt die andere Person trotzdem nie zu lesen; der Bericht
-          beschreibt Erleben und Bedürfnisse, ohne Zitate und ohne vertrauliche Einzelheiten.
-          Du kannst die Freigabe jederzeit zurückziehen.
-        </p>
+        {/* Einklappbar, weil dieser Text auf dem Handy die Freigabe und den
+            Knopf weit nach unten geschoben hat. Aber NICHT standardmaessig
+            zu: der zweite Absatz ist der Aufklaerungstext zur Freigabe
+            (unverhandelbare Regel 3, "ausdrueckliche, informierte
+            Zustimmung") -- wer noch nicht freigegeben hat, bekommt ihn
+            offen zu sehen. Erst danach klappt er von selbst zu, und genau
+            dann ist auch der Knopf ueberhaupt sichtbar. */}
+        <Ausklappbar
+          titel="Das Beziehungsbild"
+          speicherKey={`zr_bild_erklaerung_${membership.user_id}`}
+          standardOffen={!myConsent}
+        >
+          <p style={st.hint}>
+            Ein gemeinsamer Bericht in drei Teilen: <em>Das erlebst du · Das erlebt deine Partnerin
+            oder dein Partner · Was zwischen euch passiert.</em> Kein Urteil, kein Recht-haben —
+            sondern die Chance, einander zum ersten Mal von innen zu sehen.
+          </p>
+          <p style={st.hint}>
+            <strong>Wichtig:</strong> Dafür wertet Zwischenraum das Material von euch beiden gemeinsam
+            aus — anders als sonst. Deshalb entsteht der Bericht nur, wenn <strong>beide</strong> aktiv
+            freigeben. Deine Rohtexte bekommt die andere Person trotzdem nie zu lesen; der Bericht
+            beschreibt Erleben und Bedürfnisse, ohne Zitate und ohne vertrauliche Einzelheiten.
+            Du kannst die Freigabe jederzeit zurückziehen.
+          </p>
+        </Ausklappbar>
         <ErrorNote>{error}</ErrorNote>
         {letzterFehler && (
           <div style={{ marginBottom: 14 }}>

@@ -264,7 +264,7 @@ async function tokenHash(token: string): Promise<string> {
 // in ihren Log-Ausgaben. Im Funktionsrumpf waere das zur Laufzeit zwar
 // unkritisch, aber Nutzung-vor-Deklaration hat hier schon einmal einen
 // Produktionsfehler verursacht (siehe CLAUDE.md) -- also gar nicht erst.
-const VERSION = "2026-08-07v";
+const VERSION = "2026-08-08a";
 
 // ─── Verschluesselung ruhender Inhalte (CLAUDE.md Backlog Punkt 7) ──
 // AES-256-GCM ueber Deno's natives crypto.subtle -- kein externes Paket,
@@ -1711,6 +1711,36 @@ Antworte nur mit deiner Nachricht.`;
     }
 
     // ─── Ein Gespraech moderiert in den gemeinsamen Raum tragen ─
+    // Zweiter Schritt: einen zuvor angezeigten Entwurf wirklich abschicken.
+    // Der Text kommt aus der Datenbank, NICHT vom Client -- er wird mit
+    // sender_id = NULL eingestellt, was in diesem Schema "von Zwischenraum"
+    // heisst. Duerfte der Client den Text mitliefern, koennte er
+    // Zwischenraum beliebige Worte in den Mund legen.
+    if (body.action === "doc_chat_share_confirm") {
+      if (!partner) return json({ error: "Der gemeinsame Raum braucht euch beide." }, 400);
+      const entwurfId = String(body.entwurf_id ?? "");
+      if (!entwurfId) return json({ error: "Kein Entwurf angegeben." }, 400);
+
+      // Auf user_id gefiltert: unter Service Role greift keine RLS, die
+      // Berechtigungspruefung steht hier im Code.
+      const { data: entwurf } = await admin.from("share_drafts")
+        .select("id, kind, content").eq("id", entwurfId).eq("user_id", user.id).maybeSingle();
+      if (!entwurf) {
+        return json({ error: "Dieser Entwurf ist nicht mehr vorhanden. Erzeuge ihn bitte neu." }, 404);
+      }
+
+      const text = await entschluesseln(entwurf.content);
+      await admin.from("chat_messages").insert({
+        couple_id: member.couple_id, sender_id: null,
+        content: await verschluesseln(text), origin: `doc_chat:${entwurf.kind}`,
+      });
+      // Einmalig: der Entwurf ist verbraucht, ein zweiter Klick soll nicht
+      // dieselbe Eroeffnung ein zweites Mal einstellen.
+      await admin.from("share_drafts").delete().eq("id", entwurf.id);
+      await benachrichtigeBeiFreigabe(admin, member.couple_id, partner.user_id, "chat");
+      return json({ ok: true, eroeffnung: text });
+    }
+
     if (body.action === "doc_chat_share") {
       if (!partner) return json({ error: "Der gemeinsame Raum braucht euch beide." }, 400);
       const kind = String(body.kind ?? "");
@@ -1740,12 +1770,24 @@ ${dialogText}
 Antworte nur mit ${modus === "thema" ? "der Ueberschrift" : "der Eroeffnung"}, ohne Anfuehrungszeichen.`;
 
       const eroeffnung = await claude(prompt, 500);
-      await admin.from("chat_messages").insert({
-        couple_id: member.couple_id, sender_id: null,
-        content: await verschluesseln(eroeffnung), origin: `doc_chat:${kind}`,
-      });
-      await benachrichtigeBeiFreigabe(admin, member.couple_id, partner.user_id, "chat");
-      return json({ ok: true, eroeffnung });
+
+      // Nichts geht ungesehen raus. Der Text wird abgelegt und zurueck-
+      // gegeben; eingestellt wird er erst durch doc_chat_share_confirm,
+      // nachdem die Person ihn gelesen hat.
+      //
+      // Alte Entwuerfe zu diesem Dokument fallen weg -- wer zwischen
+      // "Thema" und "Eroeffnung" hin und her schaltet, soll keine Halde
+      // unbestaetigter Texte hinterlassen.
+      await admin.from("share_drafts").delete().eq("user_id", user.id).eq("doc_id", docId);
+      const { data: entwurf, error: entwurfFehler } = await admin.from("share_drafts").insert({
+        couple_id: member.couple_id, user_id: user.id, kind, doc_id: docId, modus,
+        content: await verschluesseln(eroeffnung),
+      }).select("id").single();
+      if (entwurfFehler || !entwurf) {
+        return json({ error: "Der Entwurf konnte nicht abgelegt werden: " + (entwurfFehler?.message ?? "unbekannt") }, 500);
+      }
+
+      return json({ ok: true, entwurf_id: entwurf.id, modus, eroeffnung });
     }
 
     // ─── Zwischenraum fragt: gezielte Fragen fuer ein ganzheitliches Bild ─
@@ -1932,6 +1974,7 @@ Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","..."]}`, 900);
       await admin.from("assessments").delete().eq("user_id", user.id);
       await admin.from("probes").delete().eq("user_id", user.id);
       await admin.from("doc_chats").delete().eq("user_id", user.id);
+      await admin.from("share_drafts").delete().eq("user_id", user.id);
       await admin.from("device_locks").delete().eq("user_id", user.id);
       await admin.from("mirrors").delete().eq("user_id", user.id);
       await admin.from("ai_profiles").delete().eq("user_id", user.id);

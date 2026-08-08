@@ -101,6 +101,8 @@ Begründung: `KONZEPT.md`.
 - `doc_chats` (verankerte private Gespräche zu Bericht/Spiegel, `kind`+`doc_id`)
 - `chat_messages` (sender_id NULL = KI, `origin` = Herkunft bei getragenen
   Eröffnungen, z.B. `doc_chat:report`), `couple_state` (gate_open)
+- `share_drafts` (unbestaetigte Eroeffnungen fuer den gemeinsamen Raum,
+  RLS aktiv mit **null** Policies wie `device_locks`)
 - `device_locks` (PIN-Hash+Salt fuer den Wiedereinstiegs-Schutz, RLS aktiv
   mit **null** Policies — nur die Edge Function per Service Role kommt ran)
 - `email_events`, `admins`
@@ -148,7 +150,8 @@ läuft über die Edge Function.
 `daily_digest`, `lock_status`, `lock_set`, `lock_remove`, `lock_verify`,
 `lock_reset_request`, `lock_reset_confirm`, `about_you_get`, `diary_list`,
 `conflicts_list`, `chat_list`, `chat_send`, `reports_list`, `mirrors_list`,
-`doc_chat_list`, `doc_chat_verdichten`, `assessment_skip`, `enc_status`,
+`doc_chat_list`, `doc_chat_verdichten`, `doc_chat_share_confirm`,
+`assessment_skip`, `enc_status`,
 `delete_account`, `admin_stats`
 
 Die `*_list`-Aktionen und `chat_send` sind mit der Verschlüsselung
@@ -225,6 +228,42 @@ gut sind*:
   Einmal-Onboarding, das nach dem Wegklicken für immer weg ist). Zustand
   in `localStorage`, an die Nutzer-ID gebunden — reine
   Oberflächen-Vorliebe, gehört nicht in die Datenbank.
+
+### Teilen in den gemeinsamen Raum: erst zeigen, dann senden (08.08.2026)
+
+Peter über den alten Knopf: *„Dieser Button macht mir Angst. Ohne Erklärung
+steht er da und überträgt vielleicht meine persönlichen Fragen in einen
+gemeinsamen Raum."* Berechtigt — „Das gehört in unseren Raum" war ein
+einziger Klick ohne Rückfrage, direkt unter dem privatesten Text der
+Anwendung. Dass der Text intern längst neu formuliert wurde, half nichts:
+**man konnte es dem Knopf nicht ansehen.** Vertrauen entsteht nicht daraus,
+dass es innen schon stimmt.
+
+Jetzt zweistufig:
+- `doc_chat_share` erzeugt den Vorschlag, legt ihn **verschlüsselt** in
+  `share_drafts` und gibt ihn zurück — es geht dabei nichts in den
+  gemeinsamen Raum.
+- `doc_chat_share_confirm` stellt ihn ein, nimmt den Text aber aus der
+  eigenen Ablage, **nicht** aus der Anfrage. Grund: die Eröffnung wird mit
+  `sender_id = NULL` eingestellt, was hier „von Zwischenraum" heißt — dürfte
+  der Client den Text mitliefern, könnte er Zwischenraum beliebige Worte in
+  den Mund legen. Der Entwurf ist einmalig und wird beim Einstellen gelöscht.
+
+`share_drafts` hat RLS aktiv mit **null** Policies (Muster von
+`device_locks`); die Berechtigungsprüfung steht im Code (`.eq("user_id",
+user.id)`). `delete_account` räumt die Tabelle mit auf.
+
+In der Oberfläche: der Knopf heißt „Daraus etwas in euren Raum tragen …",
+die Vorschau zeigt den Wortlaut, dazu die Wahl zwischen „Kurze Eröffnung"
+und „Nur das Thema" (der zurückhaltendste Modus war vorher gar nicht
+erreichbar — das Frontend rief immer `eroeffnung` auf) und der Satz
+**„Noch ist nichts gesendet."**
+
+Verifiziert (08.08.2026, Wegwerf-Paar, rückstandsfrei aufgeräumt): Vorschau
+erzeugt 0 Nachrichten im gemeinsamen Raum, Moduswechsel ersetzt den Entwurf
+statt zu häufen, Abbrechen sendet nichts, der eingestellte Text ist
+zeichengleich mit dem angezeigten, ein fremdes Konto kann den Entwurf nicht
+abschicken (404), ein zweiter Klick stellt ihn nicht erneut ein (404).
 
 `doc_chat_verdichten` arbeitet die verankerten Gespräche ins Profil und die
 Chronik ein — sie waren bis 07.08.2026 die einzige Textquelle, die **nicht**
