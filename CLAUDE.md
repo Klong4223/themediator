@@ -103,6 +103,8 @@ Begründung: `KONZEPT.md`.
   Eröffnungen, z.B. `doc_chat:report`), `couple_state` (gate_open)
 - `share_drafts` (unbestaetigte Eroeffnungen fuer den gemeinsamen Raum,
   RLS aktiv mit **null** Policies wie `device_locks`)
+- `couple_state.bild_hinweis_fuer` (fuer welchen Bericht der Hinweis
+  "genug Neues fuer ein weiteres Bild" schon verschickt wurde)
 - `device_locks` (PIN-Hash+Salt fuer den Wiedereinstiegs-Schutz, RLS aktiv
   mit **null** Policies — nur die Edge Function per Service Role kommt ran)
 - `email_events`, `admins`
@@ -151,6 +153,7 @@ läuft über die Edge Function.
 `lock_reset_request`, `lock_reset_confirm`, `about_you_get`, `diary_list`,
 `conflicts_list`, `chat_list`, `chat_send`, `reports_list`, `mirrors_list`,
 `doc_chat_list`, `doc_chat_verdichten`, `doc_chat_share_confirm`,
+`doc_chat_share_abbrechen`,
 `assessment_skip`, `enc_status`,
 `delete_account`, `admin_stats`
 
@@ -229,6 +232,49 @@ gut sind*:
   in `localStorage`, an die Nutzer-ID gebunden — reine
   Oberflächen-Vorliebe, gehört nicht in die Datenbank.
 
+### Wann lohnt ein *weiteres* Beziehungsbild? (08.08.2026)
+
+Die Untergrenze oben regelt nur das **erste** Bild. Danach stand der Knopf
+„Neues Beziehungsbild erstellen" dauerhaft da — und ein Lauf auf fast
+unverändertem Material sagt fast dasselbe noch einmal. Das liest sich wie
+„die KI versteht uns nicht", kostet Geld und dauert 10–20 Minuten.
+
+`NEUES_MATERIAL_MINDEST` (2.000 Zeichen, **über beide Seiten zusammen**,
+seit dem jüngsten fertigen Bericht). Deutlich niedriger als
+`BILD_MINDESTZEICHEN`, weil hier nicht bei null angefangen wird. Bewusst
+die Summe und nicht „je Person": in einem Paar, in dem gerade nur eine
+Seite schreibt, wäre sonst nie ein neues Bild möglich, obwohl sich deren
+Perspektive real verändert hat.
+
+**Das ist ausdrücklich keine Sperre.** Die Untergrenze schützt Regel 1 und
+wird deshalb serverseitig hart durchgesetzt; hier geht es nur darum, ob
+sich ein Lauf lohnt — und das darf ein Mensch anders sehen (alter Bericht,
+misslungener Lauf, schlichte Neugier). Also wird es gesagt, nicht verboten.
+Die beiden Mechanismen nicht vermischen.
+
+**Privatheit, der entscheidende Punkt:** `meilensteine` liefert `mein_neues`
+als Zahl, für das Paar aber nur `genug_neues` als Ja/Nein. Eine Summe
+beider wäre bei eigenem Zuwachs 0 eine exakte Fleiß-Angabe über die andere
+Person („sie hat also 2.300 Zeichen geschrieben") — bei einem Paar in der
+Krise ein Vorwurf, kein Fortschrittsbalken.
+
+Gemeldet wird an drei Stellen: `NaechsterSchritt.jsx` (die Karte war nach
+dem ersten Bild komplett leer und zeigt jetzt diesen Stand), direkt am
+Knopf in `Report.jsx`, und einmalig per Mail über den Tages-Digest
+(`kind: "bild_neu_moeglich"`, Text ohne jede Angabe dazu, wer geschrieben
+hat).
+
+`pruefeBildHinweis()` läuft **mit** `await` nach jedem materialtragenden
+Beitrag (`diary`, `diary_reply`, `conflict`, `probe_answer`, `assessment`).
+**Nicht** als Fire-and-forget: in der QA nachgewiesen, dass Deno Deploy die
+Isolate abräumt, sobald die Antwort draußen ist — Marker und Hinweis
+blieben dabei komplett aus. Die Prüfung kostet nur Datenbankabfragen,
+keinen Modellaufruf, also ist Abwarten das Richtige.
+`couple_state.bild_hinweis_fuer` zeigt auf den Bericht, zu dem der Hinweis
+gehört — sonst entstünde bei jedem weiteren Eintrag eine neue Mail. Der
+Marker wird **vor** dem Versand gesetzt: lieber ein Hinweis zu wenig als
+täglich einer.
+
 ### Teilen in den gemeinsamen Raum: erst zeigen, dann senden (08.08.2026)
 
 Peter über den alten Knopf: *„Dieser Button macht mir Angst. Ohne Erklärung
@@ -251,7 +297,11 @@ Jetzt zweistufig:
 
 `share_drafts` hat RLS aktiv mit **null** Policies (Muster von
 `device_locks`); die Berechtigungsprüfung steht im Code (`.eq("user_id",
-user.id)`). `delete_account` räumt die Tabelle mit auf.
+user.id)`). `delete_account` räumt die Tabelle mit auf, und
+`doc_chat_share_abbrechen` löscht den Entwurf, wenn jemand die Vorschau
+verwirft — sonst bliebe nach einem „Abbrechen" ein Ableger des privaten
+Gesprächs liegen, bis der nächste Vorschlag ihn ersetzt (beim Aufräumen
+der QA aufgefallen, an der Zeile eines echten Nutzers).
 
 In der Oberfläche: der Knopf heißt „Daraus etwas in euren Raum tragen …",
 die Vorschau zeigt den Wortlaut, dazu die Wahl zwischen „Kurze Eröffnung"

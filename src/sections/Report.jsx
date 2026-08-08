@@ -201,6 +201,23 @@ export default function Report({ membership, onGespraech }) {
               </div>
             ) : (
               <>
+                {/* Steht schon ein Bild, gehoert die Auskunft "lohnt sich das
+                    gerade" direkt an den Knopf — nicht nur in die Karte
+                    darueber. Bewusst KEINE Sperre: die Untergrenze oben
+                    schuetzt Regel 1 und wird hart durchgesetzt, hier geht es
+                    nur um den Nutzen, und den darf ein Mensch selbst anders
+                    einschaetzen (alter Bericht, misslungener Lauf, Neugier). */}
+                {material?.letztes_bild_am && (
+                  <p style={{
+                    ...st.hint, marginTop: 0, marginBottom: 12, textAlign: "left",
+                    background: material.genug_neues ? C.aSoft : C.paper,
+                    borderRadius: 10, padding: "10px 14px",
+                  }}>
+                    {material.genug_neues
+                      ? "Seit dem letzten Beziehungsbild ist genug Neues dazugekommen — ein weiteres zeigt jetzt vermutlich andere Dinge."
+                      : "Seit dem letzten Beziehungsbild ist noch wenig dazugekommen. Ein neues würde gerade vor allem dasselbe noch einmal sagen — du kannst es trotzdem erstellen."}
+                  </p>
+                )}
                 <Btn onClick={generate} disabled={busy}>
                   {busy ? "Wird gestartet …" : reports.length ? "Neues Beziehungsbild erstellen" : "Beziehungsbild erstellen"}
                 </Btn>

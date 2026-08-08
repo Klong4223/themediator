@@ -775,3 +775,18 @@ create index if not exists share_drafts_user_idx on share_drafts (user_id, doc_i
 -- die Edge Function per Service Role heran, kein Client -- auch nicht der
 -- eigene.
 alter table share_drafts enable row level security;
+
+-- ============================================================
+-- Delta 2026-08-08b: Hinweis auf ein moegliches neues Beziehungsbild
+-- ------------------------------------------------------------
+-- Merkt sich, fuer welches Beziehungsbild schon einmal der Hinweis
+-- "es ist genug Neues da fuer ein weiteres" verschickt wurde. Ohne
+-- diesen Marker wuerde bei jedem neuen Eintrag erneut eine Mail
+-- entstehen, sobald die Schwelle einmal ueberschritten ist.
+--
+-- Zeigt auf reports.id: sobald ein neues Bild erstellt wird, aendert
+-- sich der juengste Bericht, der Marker passt nicht mehr, und der
+-- Hinweis kann fuer die naechste Runde wieder ausgeloest werden. Kein
+-- eigenes Zuruecksetzen noetig.
+alter table couple_state
+  add column if not exists bild_hinweis_fuer uuid;

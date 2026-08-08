@@ -94,6 +94,16 @@ export default function DocChat({ kind, docId, canWrite }) {
     setTeilenBusy(false);
   }
 
+  // Verwirft den Vorschlag auch serverseitig. Die Anzeige verschwindet
+  // sofort; dass das Aufraeumen kurz danach passiert, muss niemand
+  // abwarten, und scheitert es, wird der Entwurf beim naechsten Vorschlag
+  // ohnehin ersetzt.
+  function abbrechen() {
+    const id = vorschau?.entwurf_id;
+    setVorschau(null);
+    if (id) callAI({ action: "doc_chat_share_abbrechen", doc_id: docId }).catch(() => { /* wird ersetzt */ });
+  }
+
   // Schickt genau den Text ab, der in der Vorschau stand -- der Server
   // nimmt ihn aus seiner eigenen Ablage, nicht aus dieser Antwort.
   async function bestaetigen() {
@@ -215,7 +225,7 @@ export default function DocChat({ kind, docId, canWrite }) {
                 <Btn onClick={bestaetigen} disabled={teilenBusy}>
                   {teilenBusy ? "…" : "In euren Raum senden"}
                 </Btn>
-                <Btn variant="ghost" onClick={() => setVorschau(null)} disabled={teilenBusy}>
+                <Btn variant="ghost" onClick={abbrechen} disabled={teilenBusy}>
                   Abbrechen
                 </Btn>
               </div>

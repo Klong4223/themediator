@@ -264,7 +264,7 @@ async function tokenHash(token: string): Promise<string> {
 // in ihren Log-Ausgaben. Im Funktionsrumpf waere das zur Laufzeit zwar
 // unkritisch, aber Nutzung-vor-Deklaration hat hier schon einmal einen
 // Produktionsfehler verursacht (siehe CLAUDE.md) -- also gar nicht erst.
-const VERSION = "2026-08-08a";
+const VERSION = "2026-08-08d";
 
 // ─── Verschluesselung ruhender Inhalte (CLAUDE.md Backlog Punkt 7) ──
 // AES-256-GCM ueber Deno's natives crypto.subtle -- kein externes Paket,
@@ -478,6 +478,81 @@ const BILD_MINDESTZEICHEN = 2500;
 // schreibt: keine nacherzaehlten Situationen, kein Einzelfall als Muster,
 // und offen benennen, was noch nicht bekannt ist.
 const SCHMALE_QUELLEN = 3;
+
+// Wieviel seit dem letzten Beziehungsbild dazugekommen sein muss, damit ein
+// neues ueberhaupt etwas anderes zeigen kann -- ueber BEIDE Seiten zusammen.
+//
+// Deutlich niedriger als BILD_MINDESTZEICHEN, weil hier nicht bei null
+// angefangen wird: das Verstaendnis beider Menschen steht schon, es geht nur
+// darum, ob genug Neues da ist, damit sich das Bild bewegt.
+//
+// Bewusst die Summe beider und nicht "je Person": in einem Paar, in dem
+// gerade nur eine Seite schreibt, waere sonst nie ein neues Bild moeglich --
+// obwohl sich ihre Perspektive real veraendert hat.
+//
+// Das ist KEINE Sperre. Die Untergrenze oben schuetzt Regel 1 und wird
+// deshalb hart durchgesetzt; hier geht es nur darum, ob ein neues Bild
+// lohnt. Das darf ein Mensch selbst anders sehen (alter Bericht, misslungener
+// Lauf, schlichte Neugier), also wird es gesagt und nicht verboten.
+const NEUES_MATERIAL_MINDEST = 2000;
+
+// Wie steht es um ein WEITERES Beziehungsbild? Liefert den juengsten
+// fertigen Bericht, den eigenen Zuwachs seither und ein Ja/Nein fuers Paar.
+//
+// Wichtig -- und der Grund, warum hier nur ein Boolean herauskommt: die
+// Summe beider Seiten zurueckzugeben waere eine praezise Fleiss-Angabe ueber
+// die andere Person, sobald der eigene Zuwachs 0 ist ("sie hat also 2.300
+// Zeichen geschrieben"). Bei einem Paar in der Krise ist das ein Vorwurf,
+// kein Fortschrittsbalken. Eigene Zahl konkret, fuers Paar nur ja/nein.
+async function neuesMaterialStand(
+  admin: ReturnType<typeof createClient>, coupleId: string, uid: string, partnerId: string | null,
+): Promise<{ letztesBild: { id: string; created_at: string } | null; meinNeues: number; genugNeues: boolean }> {
+  const { data: letztes } = await admin.from("reports")
+    .select("id, created_at").eq("couple_id", coupleId).eq("status", "done")
+    .order("created_at", { ascending: false }).limit(1).maybeSingle();
+  if (!letztes) return { letztesBild: null, meinNeues: 0, genugNeues: false };
+
+  const meins = await materialUmfang(admin, coupleId, uid, letztes.created_at);
+  const seins = partnerId
+    ? await materialUmfang(admin, coupleId, partnerId, letztes.created_at)
+    : { zeichen: 0, quellen: 0 };
+
+  return {
+    letztesBild: letztes,
+    meinNeues: meins.zeichen,
+    genugNeues: meins.zeichen + seins.zeichen >= NEUES_MATERIAL_MINDEST,
+  };
+}
+
+// Legt einmalig je Beziehungsbild einen Hinweis fuer beide an, sobald genug
+// Neues zusammengekommen ist. Der Marker in couple_state verhindert, dass
+// daraus bei jedem weiteren Eintrag erneut eine Mail entsteht; er zeigt auf
+// den Bericht, zu dem der Hinweis gehoert, und wird damit von selbst
+// hinfaellig, sobald ein neues Bild entsteht.
+//
+// Wird absichtlich ohne await aufgerufen: der Mensch soll nicht auf diese
+// Nebenrechnung warten, und wenn sie ausfaellt, holt der naechste Eintrag
+// sie nach.
+async function pruefeBildHinweis(
+  admin: ReturnType<typeof createClient>, coupleId: string, uid: string, partnerId: string | null,
+): Promise<void> {
+  if (!partnerId) return;
+  const { letztesBild, genugNeues } = await neuesMaterialStand(admin, coupleId, uid, partnerId);
+  if (!letztesBild || !genugNeues) return;
+
+  const { data: state } = await admin.from("couple_state")
+    .select("bild_hinweis_fuer").eq("couple_id", coupleId).maybeSingle();
+  if (state?.bild_hinweis_fuer === letztesBild.id) return;   // schon gesagt
+
+  // Marker zuerst setzen: faellt der Mailversand aus, gibt es lieber einen
+  // Hinweis zu wenig als bei jedem Eintrag einen neuen.
+  await admin.from("couple_state")
+    .update({ bild_hinweis_fuer: letztesBild.id }).eq("couple_id", coupleId);
+
+  for (const empfaenger of [uid, partnerId]) {
+    await benachrichtigeBeiFreigabe(admin, coupleId, empfaenger, "bild_neu_moeglich");
+  }
+}
 
 // Falls ein Lauf nie zu Ende gepollt wird (z.B. beide Browser-Tabs
 // geschlossen, bevor der letzte Poll-Tick kam), bleibt die Zeile sonst fuer
@@ -819,6 +894,12 @@ Antworte nur mit der Impression.`, 2500);
       await admin.from("diary_entries")
         .update({ ai_feedback: await verschluesseln(feedback) }).eq("id", entry.id);
       await updateProfile(admin, member.couple_id, user.id, myProfile, `Tagebucheintrag: ${entry.content}`);
+      // Bewusst MIT await: ohne das raeumt Deno Deploy die Isolate ab,
+      // sobald die Antwort draussen ist, und die Pruefung laeuft nie zu
+      // Ende -- in der QA nachgewiesen, Marker und Hinweis blieben aus.
+      // Sie kostet nur Datenbankabfragen, keinen Modellaufruf.
+      await pruefeBildHinweis(admin, member.couple_id, user.id, partner?.user_id ?? null)
+        .catch((e) => console.log(`[ai ${VERSION}] bild-hinweis fehlgeschlagen: ${e?.name ?? "?"}`));
       return json({ ok: true, id: entry.id, feedback });
     }
 
@@ -932,6 +1013,12 @@ Antworte nur mit deiner Nachricht.`, 2500);
         await updateProfile(admin, member.couple_id, user.id, myProfile,
           `Vertiefender Dialog zum Tagebucheintrag (vollstaendiger Verlauf): ${verlauf}`);
       }
+      // Bewusst MIT await: ohne das raeumt Deno Deploy die Isolate ab,
+      // sobald die Antwort draussen ist, und die Pruefung laeuft nie zu
+      // Ende -- in der QA nachgewiesen, Marker und Hinweis blieben aus.
+      // Sie kostet nur Datenbankabfragen, keinen Modellaufruf.
+      await pruefeBildHinweis(admin, member.couple_id, user.id, partner?.user_id ?? null)
+        .catch((e) => console.log(`[ai ${VERSION}] bild-hinweis fehlgeschlagen: ${e?.name ?? "?"}`));
       return json({ ok: true, reply: sichtbar, closed: abschluss });
     }
 
@@ -1002,6 +1089,12 @@ Antworte nur mit den drei Teilen.`, 2500);
       await admin.from("conflicts")
         .update({ ai_reflection: await verschluesseln(reflection) }).eq("id", k.id);
       await updateProfile(admin, member.couple_id, user.id, myProfile, `Konfliktschilderung: ${k.content}`);
+      // Bewusst MIT await: ohne das raeumt Deno Deploy die Isolate ab,
+      // sobald die Antwort draussen ist, und die Pruefung laeuft nie zu
+      // Ende -- in der QA nachgewiesen, Marker und Hinweis blieben aus.
+      // Sie kostet nur Datenbankabfragen, keinen Modellaufruf.
+      await pruefeBildHinweis(admin, member.couple_id, user.id, partner?.user_id ?? null)
+        .catch((e) => console.log(`[ai ${VERSION}] bild-hinweis fehlgeschlagen: ${e?.name ?? "?"}`));
       return json({ ok: true, id: k.id, reflection });
     }
 
@@ -1086,6 +1179,12 @@ Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","...","..."]}`);
         followups_enc: await jsonVerschluesseln(followups), followups: null,
         interview_done: followups.length === 0, updated_at: new Date().toISOString(),
       }).eq("couple_id", member.couple_id).eq("user_id", user.id);
+      // Bewusst MIT await: ohne das raeumt Deno Deploy die Isolate ab,
+      // sobald die Antwort draussen ist, und die Pruefung laeuft nie zu
+      // Ende -- in der QA nachgewiesen, Marker und Hinweis blieben aus.
+      // Sie kostet nur Datenbankabfragen, keinen Modellaufruf.
+      await pruefeBildHinweis(admin, member.couple_id, user.id, partner?.user_id ?? null)
+        .catch((e) => console.log(`[ai ${VERSION}] bild-hinweis fehlgeschlagen: ${e?.name ?? "?"}`));
       return json({ ok: true, followups });
     }
 
@@ -1108,6 +1207,12 @@ Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","...","..."]}`);
         followups_enc: await jsonVerschluesseln(followups), followups: null,
         interview_done: done, updated_at: new Date().toISOString(),
       }).eq("couple_id", member.couple_id).eq("user_id", user.id);
+      // Bewusst MIT await: ohne das raeumt Deno Deploy die Isolate ab,
+      // sobald die Antwort draussen ist, und die Pruefung laeuft nie zu
+      // Ende -- in der QA nachgewiesen, Marker und Hinweis blieben aus.
+      // Sie kostet nur Datenbankabfragen, keinen Modellaufruf.
+      await pruefeBildHinweis(admin, member.couple_id, user.id, partner?.user_id ?? null)
+        .catch((e) => console.log(`[ai ${VERSION}] bild-hinweis fehlgeschlagen: ${e?.name ?? "?"}`));
       return json({ ok: true, done });
     }
 
@@ -1279,6 +1384,13 @@ ${partnerProfile}`);
             "eigenen Worten bleiben.";
       }
 
+      // Steht schon ein Bild, ist die naechste Frage nicht mehr "geht es
+      // ueberhaupt", sondern "ist seither genug passiert, dass ein neues
+      // etwas anderes zeigen wuerde".
+      const nachher = bildMoeglich
+        ? await neuesMaterialStand(admin, member.couple_id, user.id, partner?.user_id ?? null)
+        : { letztesBild: null, meinNeues: 0, genugNeues: false };
+
       return json({
         naechster, grund,
         partner_da: !!partner,
@@ -1290,6 +1402,13 @@ ${partnerProfile}`);
         mein_umfang: meins.zeichen,
         mindestumfang: BILD_MINDESTZEICHEN,
         partner_bereit: !!partner && seins.zeichen >= BILD_MINDESTZEICHEN,
+        // Zum WEITEREN Bild. Auch hier: eigene Zahl konkret, fuers Paar nur
+        // ja/nein -- eine Summe waere bei eigenem Zuwachs 0 eine exakte
+        // Angabe darueber, wieviel die andere Person geschrieben hat.
+        letztes_bild_am: nachher.letztesBild?.created_at ?? null,
+        mein_neues: nachher.meinNeues,
+        neues_mindestens: NEUES_MATERIAL_MINDEST,
+        genug_neues: nachher.genugNeues,
         chat_offen: chatOffen,
         chat_grund: state?.readiness ?? "",
       });
@@ -1741,6 +1860,17 @@ Antworte nur mit deiner Nachricht.`;
       return json({ ok: true, eroeffnung: text });
     }
 
+    // "Abbrechen" in der Vorschau. Ohne diese Aktion bliebe der Entwurf
+    // serverseitig liegen, bis er beim naechsten Vorschlag ersetzt wird --
+    // wer abbricht, erwartet aber zu Recht, dass nichts zurueckbleibt.
+    if (body.action === "doc_chat_share_abbrechen") {
+      const docId = String(body.doc_id ?? "");
+      if (!docId) return json({ error: "Kein Dokument angegeben." }, 400);
+      await admin.from("share_drafts").delete()
+        .eq("user_id", user.id).eq("doc_id", docId);
+      return json({ ok: true });
+    }
+
     if (body.action === "doc_chat_share") {
       if (!partner) return json({ error: "Der gemeinsame Raum braucht euch beide." }, 400);
       const kind = String(body.kind ?? "");
@@ -1851,6 +1981,12 @@ Antworte NUR mit validem JSON ohne Backticks: {"fragen":["...","..."]}`, 900);
       const { myProfile } = await kontext();
       await updateProfile(admin, member.couple_id, user.id, myProfile,
         `Gezielte Frage: "${frageKlar}" — Antwort der Person: "${answer}"`);
+      // Bewusst MIT await: ohne das raeumt Deno Deploy die Isolate ab,
+      // sobald die Antwort draussen ist, und die Pruefung laeuft nie zu
+      // Ende -- in der QA nachgewiesen, Marker und Hinweis blieben aus.
+      // Sie kostet nur Datenbankabfragen, keinen Modellaufruf.
+      await pruefeBildHinweis(admin, member.couple_id, user.id, partner?.user_id ?? null)
+        .catch((e) => console.log(`[ai ${VERSION}] bild-hinweis fehlgeschlagen: ${e?.name ?? "?"}`));
       return json({ ok: true });
     }
 
@@ -2057,19 +2193,37 @@ Antworte nur mit deiner Moderationsnachricht.`, 2000);
 // "quellen" zaehlt getrennte Beitraege (Eintraege, Konflikte,
 // beantwortete Nachfragen). Es ist KEINE Huerde, sondern steuert nur,
 // wie zurueckhaltend der Bericht formuliert.
+// `seit` (ISO-Zeitstempel) begrenzt auf Material, das nach diesem Zeitpunkt
+// entstanden ist -- so laesst sich fragen, wie viel seit dem letzten
+// Beziehungsbild dazugekommen ist, ohne die Zaehllogik zu verdoppeln.
 async function materialUmfang(
-  admin: ReturnType<typeof createClient>, coupleId: string, uid: string,
+  admin: ReturnType<typeof createClient>, coupleId: string, uid: string, seit?: string,
 ): Promise<{ zeichen: number; quellen: number }> {
-  const { data: d } = await admin.from("diary_entries").select("id, content")
+  let qd = admin.from("diary_entries").select("id, content")
     .eq("couple_id", coupleId).eq("user_id", uid);
-  const { data: r } = await admin.from("diary_replies").select("id, content")
+  let qr = admin.from("diary_replies").select("id, content")
     .eq("couple_id", coupleId).eq("user_id", uid).eq("role", "user");
-  const { data: k } = await admin.from("conflicts").select("id, content")
+  let qk = admin.from("conflicts").select("id, content")
     .eq("couple_id", coupleId).eq("user_id", uid);
-  const { data: p } = await admin.from("probes").select("id, a")
+  let qp = admin.from("probes").select("id, a")
     .eq("couple_id", coupleId).eq("user_id", uid).not("a", "is", null);
-  const { data: a } = await admin.from("assessments").select("answers, answers_enc")
-    .eq("couple_id", coupleId).eq("user_id", uid).maybeSingle();
+  if (seit) {
+    qd = qd.gt("created_at", seit);
+    qr = qr.gt("created_at", seit);
+    qk = qk.gt("created_at", seit);
+    qp = qp.gt("created_at", seit);
+  }
+  const { data: d } = await qd;
+  const { data: r } = await qr;
+  const { data: k } = await qk;
+  const { data: p } = await qp;
+  // Der Fragebogen hat nur einen Stand, kein Datum je Antwort. Fuer den
+  // Zuwachs zaehlt er deshalb nur, wenn er nach dem Stichtag zuletzt
+  // bearbeitet wurde -- dann aber ganz.
+  let assessmentQuery = admin.from("assessments").select("answers, answers_enc")
+    .eq("couple_id", coupleId).eq("user_id", uid);
+  if (seit) assessmentQuery = assessmentQuery.gt("updated_at", seit);
+  const { data: a } = await assessmentQuery.maybeSingle();
 
   const laengen = await Promise.all([
     ...(d ?? []).map((x) => entschluesselnTolerant(x.content, "umfang.diary")),
@@ -2305,6 +2459,9 @@ function textFor(kind: string): string {
     case "report": return "Euer Beziehungsbild wurde erstellt und wartet auf dich.";
     case "mirror": return "Dein persönlicher Spiegel wurde erstellt.";
     case "partner_joined": return "Deine Partnerin oder dein Partner ist eurem Raum beigetreten.";
+    // Sagt bewusst nicht, wer wieviel geschrieben hat -- das waere ein
+    // Fleiss-Mass ueber die andere Person.
+    case "bild_neu_moeglich": return "Seit eurem letzten Beziehungsbild ist genug Neues dazugekommen - ein weiteres koennte jetzt etwas anderes zeigen.";
     default: return "Es gibt Neues in eurem Zwischenraum.";
   }
 }
