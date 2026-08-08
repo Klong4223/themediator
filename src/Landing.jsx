@@ -79,6 +79,23 @@ export default function Landing({ onStart }) {
         <p style={{ fontSize: 13, color: C.inkSoft, marginTop: 12 }}>
           Testphase · kostenlos · keine Werbung, kein Tracking · du musst nicht auf deinen Partner warten
         </p>
+
+        {/* Erwartungen vorher klaeren, nicht hinterher erklaeren: wer weiss,
+            dass sich noch etwas aendert, erlebt eine Aenderung als Fortschritt
+            statt als Fehler. Der Satz zu den Texten steht bewusst dabei --
+            "noch nicht fertig" laesst sonst genau die Sorge offen, ob das
+            Geschriebene den naechsten Umbau ueberlebt. */}
+        <div style={{
+          maxWidth: 520, margin: "20px auto 0", textAlign: "left",
+          border: `1px dashed ${C.line}`, borderRadius: 12, padding: "14px 16px", background: "#FDFDFC",
+        }}>
+          <p style={{ fontSize: 13.5, lineHeight: 1.6, color: C.inkSoft, margin: 0 }}>
+            <strong style={{ color: C.ink }}>Ehrlich vorweg:</strong> Zwischenraum ist eine frühe
+            Testversion und noch nicht in allem ausgereift. Design und Abläufe ändern sich noch —
+            es kann gut sein, dass etwas beim nächsten Besuch anders aussieht oder an einer anderen
+            Stelle steht. Was ihr geschrieben habt, bleibt davon unberührt.
+          </p>
+        </div>
       </S>
 
       {/* ─── Problem ─── */}
